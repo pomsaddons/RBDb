@@ -1,0 +1,22 @@
+{
+  "name": "rbdb-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "RBDb ratings backend for Roblox experiences.",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
