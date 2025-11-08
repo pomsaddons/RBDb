@@ -1,0 +1,17 @@
+{
+  "name": "rbdb-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RBDb Roblox ratings browser extension frontend.",
+  "scripts": {
+    "clean": "rimraf dist",
+    "clean:firefox": "rimraf dist-firefox",
+    "build": "npm run clean && tsc && node scripts/copy-static.mjs",
+    "build:firefox": "npm run clean:firefox && tsc --outDir dist-firefox && node scripts/copy-static.mjs firefox",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "rimraf": "^5.0.7",
+    "typescript": "^5.3.3"
+  }
+}
