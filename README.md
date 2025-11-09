@@ -34,7 +34,7 @@ Install dependencies once:
 npm install
 ```
 
-Build the extension bundle (outputs to `dist/`):
+Build the extension bundle (outputs to `dist/`): (chrome WIP rn)
 
 ```bash
 npm run build
