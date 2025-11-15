@@ -12,7 +12,7 @@
   "permissions": [],
   "host_permissions": [
     "https://www.roblox.com/*",
-    "https://pompompurin.tech/rbdb-api/*"
+    "https://rbdb.pompompurin.tech/api/*"
   ],
   "content_scripts": [
     {
