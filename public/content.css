@@ -7,6 +7,8 @@
   --rbdb-text: #141414;
   --rbdb-subtle: rgba(20, 20, 20, 0.55);
   --rbdb-scale: 1; /* dynamic zoom scale, updated by script */
+  --rbdb-surface: rgba(20, 20, 20, 0.04); /* subtle light surface for light theme */
+  --rbdb-track: rgba(20, 20, 20, 0.1);    /* neutral track color for light theme */
 }
 
 html.dark-theme {
@@ -16,6 +18,8 @@ html.dark-theme {
   --rbdb-accent: #00b06f;
   --rbdb-text: #f2f4f5;
   --rbdb-subtle: rgba(242, 244, 245, 0.6);
+  --rbdb-surface: rgba(242, 244, 245, 0.06); /* subtle raised surface for dark theme */
+  --rbdb-track: rgba(242, 244, 245, 0.12);   /* neutral track color for dark theme */
 }
 
 .rbdb-card {
@@ -38,7 +42,10 @@ html.dark-theme {
   overflow: hidden; /* keep children inside rounded corners */
 }
 
-.rbdb-card__header { padding: 0; }
+.rbdb-card__header { 
+  padding: 0; 
+  position: relative;
+}
 
 .rbdb-card__top {
   display: grid;
@@ -101,6 +108,11 @@ html.dark-theme {
   color: var(--rbdb-subtle);
 }
 
+.rbdb-card button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .rbdb-card__stars { 
   display: flex; 
   gap: calc(6px * var(--rbdb-scale)); 
@@ -113,9 +125,9 @@ html.dark-theme {
   min-width: calc(40px * var(--rbdb-scale));
   height: calc(36px * var(--rbdb-scale));
   border-radius: calc(8px * var(--rbdb-scale));
-  border: 1px solid var(--rbdb-card-border);
-  background: rgba(20, 20, 20, 0.04);
-  color: var(--rbdb-text);
+  border: 1px solid transparent !important;
+  background: var(--rbdb-accent-weak) !important;
+  color: var(--rbdb-accent) !important;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -128,20 +140,21 @@ html.dark-theme {
 .rbdb-card__star:hover,
 .rbdb-card__star:focus-visible {
   transform: translateY(-1px) scale(1.02);
-  border-color: var(--rbdb-accent);
-  color: var(--rbdb-accent);
+  background: var(--rbdb-accent) !important;
+  border-color: var(--rbdb-accent) !important;
+  color: #ffffff !important;
 }
 
 .rbdb-card__star[aria-pressed="true"],
 .rbdb-card__star[data-active="true"] {
-  background: var(--rbdb-accent);
-  border-color: var(--rbdb-accent);
-  color: #ffffff;
+  background: var(--rbdb-accent) !important;
+  border-color: var(--rbdb-accent) !important;
+  color: #ffffff !important;
 }
 .rbdb-card__toggle {
-  background: transparent;
-  border: 1px solid var(--rbdb-card-border);
-  color: var(--rbdb-text);
+  background: var(--rbdb-accent-weak) !important;
+  border: 1px solid transparent !important;
+  color: var(--rbdb-accent) !important;
   padding: calc(6px * var(--rbdb-scale)) calc(10px * var(--rbdb-scale));
   border-radius: calc(8px * var(--rbdb-scale));
   font-size: calc(12px * var(--rbdb-scale));
@@ -149,6 +162,13 @@ html.dark-theme {
   justify-self: end;          /* align to right edge */
   grid-column: 1 / -1;        /* place on its own row */
   margin-top: calc(4px * var(--rbdb-scale));            /* small spacing from header row */
+}
+
+.rbdb-card__toggle:hover,
+.rbdb-card__toggle:focus-visible {
+  background: var(--rbdb-accent) !important;
+  border-color: var(--rbdb-accent) !important;
+  color: #ffffff !important;
 }
 
 .rbdb-card__details { margin-top: calc(6px * var(--rbdb-scale)); }
@@ -230,7 +250,7 @@ html.dark-theme {
 .rbdb-card__distribution-bar {
   position: relative;
   height: calc(8px * var(--rbdb-scale));
-  background: rgba(20, 20, 20, 0.1);
+  background: var(--rbdb-track);
   border-radius: calc(4px * var(--rbdb-scale));
   overflow: hidden;
 }
@@ -279,35 +299,27 @@ html.dark-theme {
 
 /* Floating right-of-content placement */
 .rbdb-card--right {
-  position: fixed;
-  z-index: 2147483647;
-  /* left / top are set dynamically by script */
+  /* Positioning is handled by .rbdb-dock */
 }
 
-@media (max-width: 1024px) {
-  .rbdb-card--right {
-    position: static !important;
-    left: auto !important;
-    top: auto !important;
-    width: 100% !important;
-  }
-}
+/* Keep fixed placement even on small screens to avoid dropping to the bottom */
 
 /* Smooth animation + minimize styles */
 .rbdb-card {
   position: relative;
   transition: left 0.35s cubic-bezier(0.2,0.8,0.2,1),
     top 0.35s cubic-bezier(0.2,0.8,0.2,1),
+    right 0.35s cubic-bezier(0.2,0.8,0.2,1),
     width 0.35s cubic-bezier(0.2,0.8,0.2,1),
     height 0.35s cubic-bezier(0.2,0.8,0.2,1),
     border-radius 0.35s cubic-bezier(0.2,0.8,0.2,1),
     transform 0.3s cubic-bezier(0.2,0.8,0.2,1),
     opacity 0.2s ease;
-  will-change: left, top, width, height, transform;
+  will-change: left, top, right, width, height, transform;
+  transform-origin: top right;
 }
 
 .rbdb-card__minimize {
-  display: none; /* visible when absolutely positioned inside card or when minimized */
   position: absolute;
   top: calc(8px * var(--rbdb-scale));
   right: calc(8px * var(--rbdb-scale));
@@ -323,17 +335,23 @@ html.dark-theme {
   cursor: pointer;
   z-index: 3;
   font-size: calc(16px * var(--rbdb-scale));
+  padding: 0;
+}
+
+.rbdb-card__minimize:hover,
+.rbdb-card__minimize:focus-visible {
+  border-color: var(--rbdb-accent);
+  color: var(--rbdb-accent);
 }
 
 /* Minimized state: compress to bottom-right as circular icon */
 .rbdb-card[data-minimized="true"] {
-  position: fixed !important;
-  bottom: 16px !important;
-  right: 16px !important;
   width: 56px !important;
   height: 56px !important;
-  padding: calc(6px * var(--rbdb-scale)) !important;
-  border-radius: 999px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
   overflow: visible;
   display: flex;
   align-items: center;
@@ -341,14 +359,57 @@ html.dark-theme {
 }
 
 /* hide all children when minimized except the minimize button */
-.rbdb-card[data-minimized="true"] > * {
+.rbdb-card[data-minimized="true"] > :not(.rbdb-card__minimize) {
   display: none;
 }
 .rbdb-card[data-minimized="true"] .rbdb-card__minimize {
   display: flex;
+  position: static;          /* fill the minimized bubble */
+  width: 100%;
+  height: 100%;
+  border: none;              /* cleaner circular button */
+  background: transparent;
 }
 
-/* ensure minimize button is visible in normal (not minimized) mode too */
-.rbdb-card:not([data-minimized="true"]) .rbdb-card__minimize {
-  display: flex;
+/* Staged expand animation */
+.rbdb-stage {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.rbdb-card[data-staging="true"] .rbdb-stage:not(.rbdb-card__stars):not(.rbdb-card__toggle) {
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+}
+.rbdb-card[data-staging="true"] .rbdb-stage.rbdb-stage--visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* Fixed dock to anchor the widget at top-right under the navbar */
+.rbdb-dock {
+  position: fixed;
+  right: 16px;
+  top: 80px; /* JS updates this based on navbar */
+  z-index: 2147483647;
+}
+
+@keyframes rbdb-slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.rbdb-rtl-slide {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+.rbdb-rtl-slide--in {
+  animation: rbdb-slide-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }

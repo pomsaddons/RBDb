@@ -300,25 +300,50 @@ function applyThemeFromPage(source: HTMLElement, container: HTMLElement) {
   );
   const accentStyles = accentCandidate ? window.getComputedStyle(accentCandidate) : null;
   let accentColor = pickColor(accentStyles?.backgroundColor ?? accentStyles?.color, "#00b06f");
-  // Ensure accent has sufficient contrast; if not, fallback
-  const accentRgba = parseCssColor(accentColor);
+  let accentRgba = parseCssColor(accentColor);
+  const forcedAccent = { r: 0, g: 176, b: 111, a: 1 };
+
   if (accentRgba) {
-    const contrast = (() => {
-      const L1 = relativeLuminance(accentRgba) + 0.05;
-      const L2 = relativeLuminance(backgroundRgba) + 0.05;
-      return L1 > L2 ? L1 / L2 : L2 / L1;
-    })();
-    if (contrast < 2) {
-      accentColor = "#00b06f"; // fallback brand-like green
+    const L = relativeLuminance(accentRgba);
+    const isNeutral = Math.abs(accentRgba.r - accentRgba.g) < 20 && Math.abs(accentRgba.g - accentRgba.b) < 20;
+    if (isNeutral || L > 0.85 || L < 0.15) {
+      accentColor = "#00b06f";
+      accentRgba = forcedAccent;
+    } else {
+      const contrast = (() => {
+        const L1 = relativeLuminance(accentRgba) + 0.05;
+        const L2 = relativeLuminance(backgroundRgba) + 0.05;
+        return L1 > L2 ? L1 / L2 : L2 / L1;
+      })();
+      if (contrast < 2) {
+        accentColor = "#00b06f";
+        accentRgba = forcedAccent;
+      }
     }
+  } else {
+    accentColor = "#00b06f";
+    accentRgba = forcedAccent;
   }
 
   container.style.setProperty("--rbdb-card-bg", rgbaToString(backgroundRgba));
   container.style.setProperty("--rbdb-text", finalText);
   container.style.setProperty("--rbdb-card-border", borderColor);
   container.style.setProperty("--rbdb-subtle", subtleColor);
-  container.style.setProperty("--rbdb-accent", accentColor);
+  container.style.setProperty("--rbdb-accent", accentColor, "important");
+  // A soft accent fill for button backgrounds
+  const accentWeak = withAlpha(accentRgba ?? forcedAccent, 0.18, "rgba(0,176,111,0.18)");
+  container.style.setProperty("--rbdb-accent-weak", accentWeak, "important");
   container.style.setProperty("--rbdb-card-shadow", "0 8px 20px rgba(0,0,0,0.08)");
+
+  // Compute theme-aware surfaces to avoid bright buttons on dark pages
+  const bgL = relativeLuminance(backgroundRgba);
+  const isLight = bgL > 0.55;
+  const surfaceFallback = isLight ? "rgba(20,20,20,0.04)" : "rgba(242,244,245,0.06)";
+  const trackFallback = isLight ? "rgba(20,20,20,0.10)" : "rgba(242,244,245,0.12)";
+  const surface = withAlpha(finalTextRgba, isLight ? 0.04 : 0.06, surfaceFallback);
+  const track = withAlpha(finalTextRgba, isLight ? 0.10 : 0.14, trackFallback);
+  container.style.setProperty("--rbdb-surface", surface);
+  container.style.setProperty("--rbdb-track", track);
 }
 
 function resolveBackendBase(): string {
@@ -493,9 +518,9 @@ function createWidgetContainer(): {
   }
 
   top.append(headerLeft, starsWrapper, score, toggleButton);
-  // Minimize button is positioned absolutely by CSS inside the card
-  header.append(minimizeButton);
   header.append(top);
+  // Minimize button is appended directly to root to allow visibility when other children are hidden
+  root.append(minimizeButton);
 
   const hint = createElement("p", "rbdb-card__hint");
   hint.textContent = "Sign in to Roblox to share your rating.";
@@ -622,57 +647,61 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
   };
 
   const elements = createWidgetContainer();
+  // Create a fixed-position dock container to isolate placement
+  const dock = document.createElement("div");
+  dock.className = "rbdb-dock";
   let minimized = false;
   try {
     minimized = localStorage.getItem("rbdb:minimized") === "true";
+    console.log(logPrefix, "Minimized state from localStorage:", minimized);
   } catch {
     minimized = false;
   }
   // Position to the right of Roblox main content column when wide enough.
+  // Compute the desired top offset just below the Roblox navbar
+  const computeNavbarTop = () => {
+    const fallback = 80; // px
+    const candidates = [
+      document.querySelector<HTMLElement>(".rbx-navbar-header"),
+      document.querySelector<HTMLElement>("#right-navigation-header"),
+      document.querySelector<HTMLElement>(".navbar-header"),
+      document.querySelector<HTMLElement>(".container-fluid"),
+    ].filter(Boolean) as HTMLElement[];
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      if (rect.height > 0) {
+        return Math.max(60, Math.round(rect.bottom) + 8);
+      }
+    }
+    return fallback;
+  };
+
+  // Place widget fixed at top-right under the navbar
   const placeRightOfContent = () => {
     if (minimized) return;
     const vw = window.innerWidth;
-    const minInlineWidth = 1024; // below this, keep inline in flow
-
-    // Candidate anchors for the main content area
-    const contentAnchor =
-      document.querySelector<HTMLElement>("#content.content") ||
-      document.getElementById("content") ||
-      document.querySelector<HTMLElement>(".page-content, .game-main-content, .btr-game-main-container") ||
-      (target.closest<HTMLElement>("#game-detail-page, .page-content, .content") ?? undefined);
-
-    if (!contentAnchor || vw < minInlineWidth) {
-      // Fall back near the vote section for small screens or if we can't find anchors
-      if (elements.root.parentElement !== target.parentElement) {
-        target.insertAdjacentElement("afterend", elements.root);
-      }
-      elements.root.classList.remove("rbdb-card--right");
-      elements.root.classList.remove("rbdb-card--left");
-      elements.root.style.left = "";
-      elements.root.style.top = "";
-      elements.root.style.width = "";
-      return;
-    }
-
-    // Attach to body so we can position independently from page flow
-    if (!elements.root.isConnected || elements.root.parentElement !== document.body) {
-      document.body.appendChild(elements.root);
-    }
-
-    // Compute desired position to the right of the main content
-    const rect = contentAnchor.getBoundingClientRect();
-    const gap = 16; // px between content and card
-    const headerSafeTop = 88; // keep below Roblox fixed header
     const cardWidth = Math.min(380, Math.max(300, Math.floor(vw * 0.22))); // responsive width
+    const top = computeNavbarTop();
 
-    const left = Math.min(rect.right + gap, vw - cardWidth - gap);
-    const top = Math.max(headerSafeTop, Math.round(rect.top));
+    if (!dock.isConnected) {
+      document.body.appendChild(dock);
+    }
+    if (elements.root.parentElement !== dock) {
+      dock.appendChild(elements.root);
+    }
 
     elements.root.classList.remove("rbdb-card--left");
     elements.root.classList.add("rbdb-card--right");
     elements.root.style.width = `${cardWidth}px`;
-    elements.root.style.left = `${left}px`;
-    elements.root.style.top = `${top}px`;
+    elements.root.style.left = "";
+    elements.root.style.right = "";
+    elements.root.style.top = "";
+    elements.root.style.bottom = ""; // prevent bottom anchoring from previous states
+
+    dock.style.right = `16px`;
+    dock.style.left = "auto";
+    dock.style.bottom = "auto";
+    dock.style.top = `${top}px`;
   };
 
   // Adaptive scale based on viewport width & device pixel ratio.
@@ -691,14 +720,21 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
 
   // Initial mount near target; then reposition
   target.insertAdjacentElement("afterend", elements.root);
+  console.log(logPrefix, "Widget mounted to DOM, element:", elements.root);
+  console.log(logPrefix, "Widget isConnected:", elements.root.isConnected);
+  console.log(logPrefix, "Widget computed display:", window.getComputedStyle(elements.root).display);
   placeRightOfContent();
   updateScale();
+  requestAnimationFrame(() => {
+    triggerSlideAnimation(elements.root);
+  });
   window.addEventListener("resize", placeRightOfContent);
-  window.addEventListener("scroll", placeRightOfContent, { passive: true });
+  // Avoid repositioning on scroll to prevent jitter; keep fixed under navbar
   window.addEventListener("resize", updateScale);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", updateScale);
-    window.visualViewport.addEventListener("scroll", updateScale); // pinch zoom on mobile can trigger scroll in visualViewport
+    // visualViewport scroll updates scale can cause jitter; disable for stability
+    // window.visualViewport.addEventListener("scroll", updateScale);
   }
   let expanded = false;
 
@@ -706,17 +742,32 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     elements.root.dataset.minimized = minimized ? "true" : "false";
     elements.minimizeButton.setAttribute("aria-expanded", minimized ? "false" : "true");
     elements.minimizeButton.title = minimized ? "Restore" : "Minimize";
+    elements.minimizeButton.textContent = minimized ? "+" : "—";
     if (minimized) {
-      // Clear inline positioning so bottom/right CSS can take effect
+      // Ensure dock is present and position it under the navbar
+      const top = computeNavbarTop();
+      if (!dock.isConnected) {
+        document.body.appendChild(dock);
+      }
+      if (elements.root.parentElement !== dock) {
+        dock.appendChild(elements.root);
+      }
       elements.root.style.left = "";
+      elements.root.style.right = "";
       elements.root.style.top = "";
+      elements.root.style.bottom = "";
       elements.root.style.width = "";
-      // ensure fixed placement class exists so CSS rules apply
       elements.root.classList.add("rbdb-card--right");
+      dock.style.right = `16px`;
+      dock.style.left = "auto";
+      dock.style.bottom = "auto";
+      dock.style.top = `${top}px`;
     } else {
       // restore position near content
       placeRightOfContent();
       updateScale();
+      // staged reveal of UI elements
+      animateExpandSequence();
     }
     try {
       localStorage.setItem("rbdb:minimized", minimized ? "true" : "false");
@@ -732,11 +783,91 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     updateMinimizedUI();
   });
 
+  function triggerSlideAnimation(element: HTMLElement) {
+    element.classList.remove("rbdb-rtl-slide", "rbdb-rtl-slide--in");
+    element.classList.add("rbdb-rtl-slide");
+    requestAnimationFrame(() => {
+      element.classList.add("rbdb-rtl-slide--in");
+    });
+    const cleanup = () => {
+      element.classList.remove("rbdb-rtl-slide", "rbdb-rtl-slide--in");
+    };
+    element.addEventListener("animationend", cleanup, { once: true });
+  }
+
+  function animateExpandSequence() {
+    const stages = [
+      elements.root.querySelector<HTMLElement>(".rbdb-card__titlewrap"),
+      elements.root.querySelector<HTMLElement>(".rbdb-card__score"),
+      elements.root.querySelector<HTMLElement>(".rbdb-card__hint"),
+    ].filter(Boolean) as HTMLElement[];
+
+    if (stages.length === 0) return;
+
+    // Remove stage class from stars and toggle if present, so they stay green
+    const starsWrapper = elements.root.querySelector<HTMLElement>(".rbdb-card__stars");
+    const toggleButton = elements.root.querySelector<HTMLElement>(".rbdb-card__toggle");
+    if (starsWrapper) starsWrapper.classList.remove("rbdb-stage");
+    if (toggleButton) toggleButton.classList.remove("rbdb-stage");
+
+    elements.root.dataset.staging = "true";
+    stages.forEach((el) => {
+      el.classList.add("rbdb-stage");
+      el.classList.remove("rbdb-stage--visible");
+      triggerSlideAnimation(el);
+    });
+
+    // Wait for container size transition to complete before revealing content
+    const containerDelay = 200; // ms
+    const stepDelay = 80; // ms between each stage
+    requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        stages.forEach((el, idx) => {
+          window.setTimeout(() => {
+            el.classList.add("rbdb-stage--visible");
+            if (idx === stages.length - 1) {
+              window.setTimeout(() => {
+                delete elements.root.dataset.staging;
+              }, 200);
+            }
+          }, idx * stepDelay);
+        });
+      }, containerDelay);
+    });
+  }
+
+  function animateDetailsSequence() {
+    const detailsChildren = Array.from(elements.details.children) as HTMLElement[];
+    if (detailsChildren.length === 0) return;
+
+    detailsChildren.forEach((child) => {
+      child.classList.add("rbdb-stage");
+      child.classList.remove("rbdb-stage--visible");
+      triggerSlideAnimation(child);
+    });
+
+    const stepDelay = 70;
+    requestAnimationFrame(() => {
+      detailsChildren.forEach((el, idx) => {
+        window.setTimeout(() => {
+          el.classList.add("rbdb-stage--visible");
+        }, idx * stepDelay);
+      });
+    });
+  }
+
   function updateExpandedUI() {
     elements.root.dataset.expanded = expanded ? "true" : "false";
+    const wasHidden = elements.details.hidden;
     elements.details.hidden = !expanded;
     elements.toggleButton.setAttribute("aria-expanded", expanded ? "true" : "false");
     elements.toggleButton.textContent = expanded ? "Details ▾" : "Details ▸";
+    if (expanded) {
+      // If details just became visible, animate its children like other content
+      if (wasHidden) {
+        animateDetailsSequence();
+      }
+    }
   }
   updateExpandedUI();
   elements.toggleButton.addEventListener("click", () => {
@@ -949,20 +1080,27 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
 }
 
 async function bootstrap() {
+  console.log(logPrefix, "Bootstrap started");
   const backendBase = resolveBackendBase();
+  console.log(logPrefix, "Backend base:", backendBase);
   const universeId = getUniverseId();
+  console.log(logPrefix, "Universe ID:", universeId);
   if (!universeId) {
     console.debug(logPrefix, "Universe ID not found – skipping RBDb widget");
     return;
   }
 
+  console.log(logPrefix, "Waiting for vote section...");
   const voteSection = await waitForElement<HTMLElement>(".users-vote", 20_000);
+  console.log(logPrefix, "Vote section found:", voteSection);
   if (!voteSection) {
     console.debug(logPrefix, "Vote section not found – skipping RBDb widget");
     return;
   }
 
+  console.log(logPrefix, "Injecting widget...");
   injectWidget(voteSection, universeId, backendBase);
+  console.log(logPrefix, "Widget injected successfully");
 }
 
 if (document.readyState === "complete" || document.readyState === "interactive") {
