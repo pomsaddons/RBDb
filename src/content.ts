@@ -442,6 +442,7 @@ function createWidgetContainer(): {
   distributionEmpty: HTMLElement;
   details: HTMLElement;
   toggleButton: HTMLButtonElement;
+  minimizeButton: HTMLButtonElement;
   status: HTMLElement;
   error: HTMLElement;
   clearButton: HTMLButtonElement;
@@ -473,6 +474,12 @@ function createWidgetContainer(): {
   toggleButton.title = "Show details";
   toggleButton.textContent = "Details ▸";
 
+  const minimizeButton = createElement("button", "rbdb-card__minimize") as HTMLButtonElement;
+  minimizeButton.type = "button";
+  minimizeButton.setAttribute("aria-expanded", "true");
+  minimizeButton.title = "Minimize";
+  minimizeButton.textContent = "—";
+
   const starsWrapper = createElement("div", "rbdb-card__stars");
   const stars: HTMLButtonElement[] = [];
   for (let value = 1; value <= 5; value += 1) {
@@ -486,6 +493,8 @@ function createWidgetContainer(): {
   }
 
   top.append(headerLeft, starsWrapper, score, toggleButton);
+  // Minimize button is positioned absolutely by CSS inside the card
+  header.append(minimizeButton);
   header.append(top);
 
   const hint = createElement("p", "rbdb-card__hint");
@@ -548,6 +557,7 @@ function createWidgetContainer(): {
     distributionEmpty,
     details,
     toggleButton,
+    minimizeButton,
     status,
     error,
     clearButton,
@@ -612,8 +622,15 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
   };
 
   const elements = createWidgetContainer();
+  let minimized = false;
+  try {
+    minimized = localStorage.getItem("rbdb:minimized") === "true";
+  } catch {
+    minimized = false;
+  }
   // Position to the right of Roblox main content column when wide enough.
   const placeRightOfContent = () => {
+    if (minimized) return;
     const vw = window.innerWidth;
     const minInlineWidth = 1024; // below this, keep inline in flow
 
@@ -684,6 +701,36 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     window.visualViewport.addEventListener("scroll", updateScale); // pinch zoom on mobile can trigger scroll in visualViewport
   }
   let expanded = false;
+
+  function updateMinimizedUI() {
+    elements.root.dataset.minimized = minimized ? "true" : "false";
+    elements.minimizeButton.setAttribute("aria-expanded", minimized ? "false" : "true");
+    elements.minimizeButton.title = minimized ? "Restore" : "Minimize";
+    if (minimized) {
+      // Clear inline positioning so bottom/right CSS can take effect
+      elements.root.style.left = "";
+      elements.root.style.top = "";
+      elements.root.style.width = "";
+      // ensure fixed placement class exists so CSS rules apply
+      elements.root.classList.add("rbdb-card--right");
+    } else {
+      // restore position near content
+      placeRightOfContent();
+      updateScale();
+    }
+    try {
+      localStorage.setItem("rbdb:minimized", minimized ? "true" : "false");
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  updateMinimizedUI();
+
+  elements.minimizeButton.addEventListener("click", () => {
+    minimized = !minimized;
+    updateMinimizedUI();
+  });
 
   function updateExpandedUI() {
     elements.root.dataset.expanded = expanded ? "true" : "false";

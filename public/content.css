@@ -292,3 +292,63 @@ html.dark-theme {
     width: 100% !important;
   }
 }
+
+/* Smooth animation + minimize styles */
+.rbdb-card {
+  position: relative;
+  transition: left 0.35s cubic-bezier(0.2,0.8,0.2,1),
+    top 0.35s cubic-bezier(0.2,0.8,0.2,1),
+    width 0.35s cubic-bezier(0.2,0.8,0.2,1),
+    height 0.35s cubic-bezier(0.2,0.8,0.2,1),
+    border-radius 0.35s cubic-bezier(0.2,0.8,0.2,1),
+    transform 0.3s cubic-bezier(0.2,0.8,0.2,1),
+    opacity 0.2s ease;
+  will-change: left, top, width, height, transform;
+}
+
+.rbdb-card__minimize {
+  display: none; /* visible when absolutely positioned inside card or when minimized */
+  position: absolute;
+  top: calc(8px * var(--rbdb-scale));
+  right: calc(8px * var(--rbdb-scale));
+  width: calc(32px * var(--rbdb-scale));
+  height: calc(32px * var(--rbdb-scale));
+  border-radius: calc(8px * var(--rbdb-scale));
+  border: 1px solid var(--rbdb-card-border);
+  background: transparent;
+  color: var(--rbdb-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 3;
+  font-size: calc(16px * var(--rbdb-scale));
+}
+
+/* Minimized state: compress to bottom-right as circular icon */
+.rbdb-card[data-minimized="true"] {
+  position: fixed !important;
+  bottom: 16px !important;
+  right: 16px !important;
+  width: 56px !important;
+  height: 56px !important;
+  padding: calc(6px * var(--rbdb-scale)) !important;
+  border-radius: 999px !important;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* hide all children when minimized except the minimize button */
+.rbdb-card[data-minimized="true"] > * {
+  display: none;
+}
+.rbdb-card[data-minimized="true"] .rbdb-card__minimize {
+  display: flex;
+}
+
+/* ensure minimize button is visible in normal (not minimized) mode too */
+.rbdb-card:not([data-minimized="true"]) .rbdb-card__minimize {
+  display: flex;
+}
