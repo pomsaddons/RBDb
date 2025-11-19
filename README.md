@@ -53,7 +53,7 @@ npm run build:firefox
 
 ### Custom backend origin
 By default the widget targets `http://localhost:4000`. To point it at a different API, define `RBDB_BACKEND_URL` before the Roblox page loads (for example through another content script or a snippet injected by your deployment).
-
+The backend starting in version 0.1.2 will not be up to date due to moderation features which will be upcoming.
 ## Load into Chrome/Edge (BROKEN ! ! !)
 1. Run `npm run build`.
 2. Open `chrome://extensions` (or `edge://extensions`).
