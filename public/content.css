@@ -8,7 +8,7 @@
   --rbdb-subtle: rgba(20, 20, 20, 0.55);
   --rbdb-scale: 1; /* dynamic zoom scale, updated by script */
   --rbdb-surface: rgba(20, 20, 20, 0.04); /* subtle light surface for light theme */
-  --rbdb-track: rgba(20, 20, 20, 0.1);    /* neutral track color for light theme */
+  --rbdb-track: rgba(20, 20, 20, 0.16);   /* stronger neutral track for light theme */
 }
 
 html.dark-theme {
@@ -18,8 +18,8 @@ html.dark-theme {
   --rbdb-accent: #00b06f;
   --rbdb-text: #f2f4f5;
   --rbdb-subtle: rgba(242, 244, 245, 0.6);
-  --rbdb-surface: rgba(242, 244, 245, 0.06); /* subtle raised surface for dark theme */
-  --rbdb-track: rgba(242, 244, 245, 0.12);   /* neutral track color for dark theme */
+  --rbdb-surface: rgba(242, 244, 245, 0.14); /* more visible raised surface for dark theme */
+  --rbdb-track: rgba(242, 244, 245, 0.30);   /* brighter track color for dark theme */
 }
 
 .rbdb-card {
@@ -113,11 +113,14 @@ html.dark-theme {
   appearance: none;
 }
 
-.rbdb-card__stars { 
-  display: flex; 
-  gap: calc(6px * var(--rbdb-scale)); 
-  grid-column: 1;           /* left column */
-  grid-row: 2;              /* second row under title */
+.rbdb-card__stars {
+  display: flex;
+  gap: calc(6px * var(--rbdb-scale));
+  row-gap: calc(8px * var(--rbdb-scale));
+  flex-wrap: wrap;
+  grid-column: 1 / -1; /* span both columns so stars don't get squeezed */
+  grid-row: 2;
+  justify-content: flex-start;
 }
 
 .rbdb-card__star {
@@ -125,16 +128,17 @@ html.dark-theme {
   min-width: calc(40px * var(--rbdb-scale));
   height: calc(36px * var(--rbdb-scale));
   border-radius: calc(8px * var(--rbdb-scale));
-  border: 1px solid transparent !important;
-  background: var(--rbdb-accent-weak) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  background: linear-gradient(135deg, rgba(0, 176, 111, 0.08), rgba(0, 176, 111, 0.14)) !important;
   color: var(--rbdb-accent) !important;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
   font-weight: 600;
   font-size: calc(14px * var(--rbdb-scale));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .rbdb-card__star:hover,
@@ -143,6 +147,7 @@ html.dark-theme {
   background: var(--rbdb-accent) !important;
   border-color: var(--rbdb-accent) !important;
   color: #ffffff !important;
+  box-shadow: 0 6px 14px rgba(0, 176, 111, 0.35);
 }
 
 .rbdb-card__star[aria-pressed="true"],
@@ -193,14 +198,14 @@ html.dark-theme {
 }
 
 .rbdb-card__clear {
-  background: transparent;
+  background: var(--rbdb-surface);
   border: 1px solid var(--rbdb-card-border);
   border-radius: 999px;
   padding: calc(6px * var(--rbdb-scale)) calc(16px * var(--rbdb-scale));
   font-size: calc(12px * var(--rbdb-scale));
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition: opacity 0.2s ease, border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
   color: var(--rbdb-text);
 }
 
@@ -220,6 +225,7 @@ html.dark-theme {
 .rbdb-card__clear:focus-visible {
   border-color: var(--rbdb-accent);
   color: var(--rbdb-accent);
+  background: var(--rbdb-accent-weak);
 }
 
 .rbdb-card__retry:hover,
@@ -239,11 +245,27 @@ html.dark-theme {
   gap: calc(6px * var(--rbdb-scale));
 }
 
+.rbdb-card__rating-footer {
+  margin-top: calc(10px * var(--rbdb-scale));
+  padding-top: calc(10px * var(--rbdb-scale));
+  border-top: 1px solid var(--rbdb-card-border);
+  display: flex;
+  justify-content: flex-end;
+}
+.rbdb-card__rating-footer:empty {
+  display: none;
+}
+.rbdb-card__rating-footer .rbdb-card__clear {
+  width: 100%;
+  text-align: center;
+}
+
 .rbdb-card__distribution-row {
   display: grid;
-  grid-template-columns: 44px 1fr auto;
+  grid-template-columns: minmax(48px, 4ch) 1fr auto;
   align-items: center;
-  gap: calc(8px * var(--rbdb-scale));
+  column-gap: calc(8px * var(--rbdb-scale));
+  row-gap: calc(4px * var(--rbdb-scale));
   font-size: calc(12px * var(--rbdb-scale));
 }
 
@@ -253,6 +275,7 @@ html.dark-theme {
   background: var(--rbdb-track);
   border-radius: calc(4px * var(--rbdb-scale));
   overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--rbdb-card-border);
 }
 
 .rbdb-card__distribution-bar-fill {
@@ -297,10 +320,7 @@ html.dark-theme {
   }
 }
 
-/* Floating right-of-content placement */
-.rbdb-card--right {
-  /* Positioning is handled by .rbdb-dock */
-}
+/* Floating right-of-content placement handled by .rbdb-dock */
 
 /* Keep fixed placement even on small screens to avoid dropping to the bottom */
 
@@ -412,4 +432,172 @@ html.dark-theme {
 
 .rbdb-rtl-slide--in {
   animation: rbdb-slide-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.rbdb-card__comments {
+  border-top: 1px solid var(--rbdb-card-border);
+  padding-top: calc(8px * var(--rbdb-scale));
+  display: flex;
+  flex-direction: column;
+  gap: calc(8px * var(--rbdb-scale));
+}
+.rbdb-card__comments-title {
+  margin: 0;
+  font-size: calc(13px * var(--rbdb-scale));
+  color: var(--rbdb-subtle);
+}
+.rbdb-card__comments-status {
+  margin: 0;
+  font-size: calc(12px * var(--rbdb-scale));
+  color: var(--rbdb-subtle);
+}
+.rbdb-card__comments-status[data-tone="error"] {
+  color: #c92a2a;
+}
+.rbdb-card__comments-status[data-tone="success"] {
+  color: #2f9e44;
+}
+.rbdb-card__comments-list { display:flex; flex-direction:column; gap: calc(8px * var(--rbdb-scale)); }
+.rbdb-card__comment { padding: calc(8px * var(--rbdb-scale)); background: var(--rbdb-surface); border-radius: calc(8px * var(--rbdb-scale)); }
+.rbdb-card__comment-meta { font-size: calc(12px * var(--rbdb-scale)); color: var(--rbdb-subtle); display:flex; gap:8px; align-items:center; }
+.rbdb-card__comment-body { margin-top: calc(6px * var(--rbdb-scale)); color: var(--rbdb-text); font-size: calc(13px * var(--rbdb-scale)); }
+.rbdb-card__comments-composer { display:flex; flex-direction:column; gap: calc(6px * var(--rbdb-scale)); }
+.rbdb-card__comments-input {
+  width: 100%;
+  border-radius: calc(8px * var(--rbdb-scale));
+  border: 1px solid var(--rbdb-card-border);
+  padding: calc(8px * var(--rbdb-scale));
+  font-size: calc(13px * var(--rbdb-scale));
+  font-family: inherit;
+  resize: vertical;
+  min-height: calc(60px * var(--rbdb-scale));
+  color: var(--rbdb-text);
+  background: var(--rbdb-card-bg);
+}
+.rbdb-card__comments-input:disabled {
+  background: var(--rbdb-surface);
+  cursor: not-allowed;
+}
+.rbdb-card__comments-composer-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: calc(8px * var(--rbdb-scale));
+}
+.rbdb-card__comments-count {
+  font-size: calc(11px * var(--rbdb-scale));
+  color: var(--rbdb-subtle);
+}
+.rbdb-card__comments-submit {
+  background: linear-gradient(135deg, var(--rbdb-accent), #00c67d);
+  border: none;
+  border-radius: calc(999px * var(--rbdb-scale));
+  color: #fff;
+  font-weight: 600;
+  font-size: calc(13px * var(--rbdb-scale));
+  padding: calc(8px * var(--rbdb-scale)) calc(22px * var(--rbdb-scale));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6px * var(--rbdb-scale));
+  min-width: calc(96px * var(--rbdb-scale));
+  box-shadow: 0 8px 18px rgba(0, 176, 111, 0.28);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+.rbdb-card__comments-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.rbdb-card__comments-submit:not(:disabled):hover,
+.rbdb-card__comments-submit:not(:disabled):focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 20px rgba(0, 176, 111, 0.35);
+}
+.rbdb-card__comments-submit:not(:disabled):active {
+  transform: translateY(0);
+  box-shadow: 0 6px 14px rgba(0, 176, 111, 0.25);
+}
+.rbdb-card__comment-actions {
+  margin-top: calc(8px * var(--rbdb-scale));
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(8px * var(--rbdb-scale));
+  flex-wrap: wrap;
+}
+.rbdb-card__comment-action {
+  background: transparent;
+  border: 1px solid var(--rbdb-card-border);
+  border-radius: 999px;
+  font-size: calc(12px * var(--rbdb-scale));
+  padding: calc(4px * var(--rbdb-scale)) calc(12px * var(--rbdb-scale));
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+}
+.rbdb-card__comment-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.rbdb-card__comment-action[data-state="sending"] {
+  cursor: progress;
+  opacity: 0.7;
+}
+.rbdb-card__comment-report {
+  color: var(--rbdb-subtle);
+}
+.rbdb-card__comment-report:hover,
+.rbdb-card__comment-report:focus-visible {
+  color: var(--rbdb-accent);
+  border-color: var(--rbdb-accent);
+}
+.rbdb-card__comment-report[data-state="reported"],
+.rbdb-card__comment-report[data-state="removed"] {
+  color: var(--rbdb-subtle);
+  border-style: dashed;
+  cursor: default;
+}
+.rbdb-card__comment-delete {
+  color: #c92a2a;
+  border-color: rgba(201, 42, 42, 0.4);
+}
+.rbdb-card__comment-delete:hover,
+.rbdb-card__comment-delete:focus-visible {
+  color: #fa5252;
+  border-color: #fa5252;
+}
+.rbdb-card__comments-pager-wrap {
+  display: flex;
+  gap: calc(8px * var(--rbdb-scale));
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.rbdb-card__comments-pager {
+  min-width: calc(96px * var(--rbdb-scale));
+  text-align: center;
+}
+.rbdb-card__comments-prev,
+.rbdb-card__comments-next {
+  padding: calc(6px * var(--rbdb-scale)) calc(14px * var(--rbdb-scale));
+  border-radius: calc(999px * var(--rbdb-scale));
+  background: transparent;
+  border: 1px solid var(--rbdb-card-border);
+  cursor: pointer;
+  font-weight: 600;
+  transition: color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+.rbdb-card__comments-prev:hover,
+.rbdb-card__comments-prev:focus-visible,
+.rbdb-card__comments-next:hover,
+.rbdb-card__comments-next:focus-visible {
+  color: var(--rbdb-accent);
+  border-color: var(--rbdb-accent);
+  transform: translateY(-1px);
+}
+.rbdb-card__comments-prev:disabled,
+.rbdb-card__comments-next:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }

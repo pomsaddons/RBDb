@@ -1,18 +1,21 @@
 {
   "manifest_version": 3,
   "name": "RBDb - Roblox Ratings",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "description": "Rate Roblox experiences with the RBDb community.",
   "icons": {
     "128": "icons/icon.png"
   },
   "background": {
-    "scripts": ["background.js"]
+    "service_worker": "background.js",
+    "type": "module"
   },
   "permissions": [],
   "host_permissions": [
     "https://www.roblox.com/*",
-    "https://rbdb.pompompurin.tech/api/*"
+    "https://rbdb.pompompurin.tech/api/*",
+    "http://localhost:4000/*",
+    "http://127.0.0.1:4000/*"
   ],
   "content_scripts": [
     {

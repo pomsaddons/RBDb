@@ -21,6 +21,23 @@ type RatingSummary = {
   userRating: RatingUserEntry | null;
 };
 
+type CommentEntry = {
+  id: string;
+  userId?: string | null;
+  username?: string | null;
+  body: string;
+  createdAt: string;
+  moderated?: boolean;
+  reportCount?: number;
+};
+
+type CommentsPage = {
+  comments: CommentEntry[];
+  total?: number; // total comments (optional)
+  page?: number;
+  pageSize?: number;
+};
+
 type AuthenticatedUser = {
   userId: number;
   username: string;
@@ -338,10 +355,11 @@ function applyThemeFromPage(source: HTMLElement, container: HTMLElement) {
   // Compute theme-aware surfaces to avoid bright buttons on dark pages
   const bgL = relativeLuminance(backgroundRgba);
   const isLight = bgL > 0.55;
-  const surfaceFallback = isLight ? "rgba(20,20,20,0.04)" : "rgba(242,244,245,0.06)";
-  const trackFallback = isLight ? "rgba(20,20,20,0.10)" : "rgba(242,244,245,0.12)";
-  const surface = withAlpha(finalTextRgba, isLight ? 0.04 : 0.06, surfaceFallback);
-  const track = withAlpha(finalTextRgba, isLight ? 0.10 : 0.14, trackFallback);
+  const surfaceFallback = isLight ? "rgba(20,20,20,0.04)" : "rgba(255,255,255,0.14)";
+  const trackFallback = isLight ? "rgba(20,20,20,0.16)" : "rgba(255,255,255,0.30)";
+  const surface = withAlpha(finalTextRgba, isLight ? 0.04 : 0.14, surfaceFallback);
+  const trackStrength = isLight ? 0.2 : 0.34;
+  const track = withAlpha(finalTextRgba, trackStrength, trackFallback);
   container.style.setProperty("--rbdb-surface", surface);
   container.style.setProperty("--rbdb-track", track);
 }
@@ -465,6 +483,16 @@ function createWidgetContainer(): {
   distributionWrapper: HTMLElement;
   distributionRows: HTMLElement[];
   distributionEmpty: HTMLElement;
+  commentsWrapper: HTMLElement;
+  commentsList: HTMLElement;
+  commentsComposer: HTMLFormElement;
+  commentsInput: HTMLTextAreaElement;
+  commentsSubmit: HTMLButtonElement;
+  commentsCount: HTMLElement;
+  commentsPager: HTMLSelectElement;
+  commentsPrev: HTMLButtonElement;
+  commentsNext: HTMLButtonElement;
+  commentsStatus: HTMLElement;
   details: HTMLElement;
   toggleButton: HTMLButtonElement;
   minimizeButton: HTMLButtonElement;
@@ -546,17 +574,55 @@ function createWidgetContainer(): {
   distributionEmpty.textContent = "No ratings yet. Be the first to vote!";
   distributionWrapper.append(distributionEmpty);
 
+  // Comments area
+  const commentsWrapper = createElement("div", "rbdb-card__comments");
+  const commentsTitle = createElement("h4", "rbdb-card__comments-title");
+  commentsTitle.textContent = "Comments";
+  const commentsStatus = createElement("p", "rbdb-card__comments-status");
+  commentsStatus.textContent = "Loading comments…";
+  const commentsComposer = createElement("form", "rbdb-card__comments-composer") as HTMLFormElement;
+  const commentsInput = createElement("textarea", "rbdb-card__comments-input") as HTMLTextAreaElement;
+  commentsInput.rows = 2;
+  commentsInput.placeholder = "Share your thoughts";
+  const commentsComposerBar = createElement("div", "rbdb-card__comments-composer-bar");
+  const commentsCount = createElement("span", "rbdb-card__comments-count");
+  const commentsSubmit = createElement("button", "rbdb-card__comments-submit") as HTMLButtonElement;
+  commentsSubmit.type = "submit";
+  commentsSubmit.textContent = "Post";
+  commentsComposerBar.append(commentsCount, commentsSubmit);
+  commentsComposer.append(commentsInput, commentsComposerBar);
+  const commentsList = createElement("div", "rbdb-card__comments-list");
+
+  // Pager controls: prev, select page, next
+  const commentsPager = createElement("select", "rbdb-card__comments-pager") as HTMLSelectElement;
+  const commentsPrev = createElement("button", "rbdb-card__comments-prev") as HTMLButtonElement;
+  commentsPrev.type = "button";
+  commentsPrev.textContent = "Prev";
+  commentsPrev.setAttribute("aria-label", "Go to previous page");
+  const commentsNext = createElement("button", "rbdb-card__comments-next") as HTMLButtonElement;
+  commentsNext.type = "button";
+  commentsNext.textContent = "Next";
+  commentsNext.setAttribute("aria-label", "Go to next page");
+
+  const pagerWrap = createElement("div", "rbdb-card__comments-pager-wrap");
+  pagerWrap.append(commentsPrev, commentsPager, commentsNext);
+
+  commentsWrapper.append(commentsTitle, commentsStatus, commentsComposer, commentsList, pagerWrap);
+
   const actions = createElement("div", "rbdb-card__actions");
   const clearButton = createElement("button", "rbdb-card__clear") as HTMLButtonElement;
   clearButton.type = "button";
   clearButton.textContent = "Remove my rating";
   clearButton.hidden = true;
 
+  const ratingFooter = createElement("div", "rbdb-card__rating-footer");
+  ratingFooter.append(clearButton);
+
   const retryButton = createElement("button", "rbdb-card__retry") as HTMLButtonElement;
   retryButton.type = "button";
   retryButton.textContent = "Try again";
   retryButton.hidden = true;
-  actions.append(clearButton, retryButton);
+  actions.append(retryButton);
 
   const status = createElement("p", "rbdb-card__status");
   status.textContent = "Loading ratings…";
@@ -564,7 +630,7 @@ function createWidgetContainer(): {
   error.hidden = true;
 
   const details = createElement("div", "rbdb-card__details");
-  details.append(distributionWrapper, actions);
+  details.append(distributionWrapper, ratingFooter, commentsWrapper, actions);
   details.hidden = true;
 
   root.append(header, hint, details, status, error);
@@ -580,6 +646,16 @@ function createWidgetContainer(): {
     distributionWrapper,
     distributionRows,
     distributionEmpty,
+    commentsWrapper,
+    commentsList,
+    commentsComposer,
+    commentsInput,
+    commentsSubmit,
+    commentsCount,
+    commentsPager,
+    commentsPrev,
+    commentsNext,
+    commentsStatus,
     details,
     toggleButton,
     minimizeButton,
@@ -866,6 +942,13 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
       // If details just became visible, animate its children like other content
       if (wasHidden) {
         animateDetailsSequence();
+        // Load comments when details are first shown
+        try {
+          // kick off comments load but don't await
+          void requestComments(commentsPageNum, commentsPageSize);
+        } catch {
+          // ignore
+        }
       }
     }
   }
@@ -927,6 +1010,294 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
       elements.error.hidden = true;
       elements.error.textContent = "";
       elements.retryButton.hidden = true;
+    }
+  }
+
+  function setCommentsStatus(message: string | null, tone: "info" | "error" | "success" = "info") {
+    if (!message) {
+      elements.commentsStatus.hidden = true;
+      elements.commentsStatus.textContent = "";
+      elements.commentsStatus.dataset.tone = "";
+      return;
+    }
+    elements.commentsStatus.hidden = false;
+    elements.commentsStatus.textContent = message;
+    elements.commentsStatus.dataset.tone = tone;
+  }
+
+  // Comments state and helpers
+  let commentsPageNum = 1;
+  const commentsPageSize = 5;
+  let commentsTotal = undefined as number | undefined;
+  const reportedComments = new Set<string>();
+  const COMMENT_MAX_LENGTH = 500;
+  let isPostingComment = false;
+
+  elements.commentsInput.maxLength = COMMENT_MAX_LENGTH;
+  elements.commentsCount.textContent = `0/${COMMENT_MAX_LENGTH}`;
+
+  function updateComposerAvailability() {
+    if (!user) {
+      elements.commentsInput.disabled = true;
+      elements.commentsSubmit.disabled = true;
+      elements.commentsInput.placeholder = "Sign in to Roblox to post comments";
+    } else {
+      elements.commentsInput.disabled = false;
+      elements.commentsSubmit.disabled = false;
+      elements.commentsInput.placeholder = "Share your thoughts";
+    }
+  }
+
+  function updateComposerCounter() {
+    const value = elements.commentsInput.value ?? "";
+    elements.commentsCount.textContent = `${value.length}/${COMMENT_MAX_LENGTH}`;
+  }
+
+  updateComposerAvailability();
+  updateComposerCounter();
+
+  async function requestComments(page: number, pageSize: number, options: { showLoading?: boolean } = {}) {
+    const { showLoading = true } = options;
+    if (showLoading) {
+      setCommentsStatus("Loading comments…", "info");
+    }
+    try {
+      const resp = await backendRequest<CommentsPage>(
+        `/api/games/${universeId}/comments`,
+        backendBase,
+        {
+          method: "GET",
+          searchParams: { page: `${page}`, pageSize: `${pageSize}` },
+        },
+      );
+
+      const payload = resp as CommentsPage | CommentEntry[];
+      const comments = Array.isArray((payload as CommentsPage).comments)
+        ? ((payload as CommentsPage).comments as CommentEntry[])
+        : Array.isArray(payload)
+          ? (payload as CommentEntry[])
+          : [];
+      commentsTotal = (payload && typeof (payload as CommentsPage).total === "number")
+        ? (payload as CommentsPage).total
+        : undefined;
+      renderComments(comments, page, pageSize, commentsTotal);
+      if (showLoading) {
+        setCommentsStatus(null);
+      }
+    } catch (error) {
+      console.warn(logPrefix, "Failed to load comments", error);
+      setCommentsStatus(error instanceof Error ? error.message : "Unable to load comments.", "error");
+      elements.commentsList.innerHTML = "";
+      elements.commentsPager.innerHTML = "";
+    }
+  }
+
+  function renderComments(comments: CommentEntry[], page: number, pageSize: number, total?: number) {
+    elements.commentsList.innerHTML = "";
+    if (!comments || comments.length === 0) {
+      const empty = createElement("p", "rbdb-card__comments-empty");
+      empty.textContent = "No comments yet.";
+      elements.commentsList.append(empty);
+    } else {
+      for (const c of comments) {
+        const item = createElement("div", "rbdb-card__comment");
+        const meta = createElement("div", "rbdb-card__comment-meta");
+        const author = createElement("strong");
+        author.textContent = c.username ?? `User ${c.userId ?? ""}`;
+        const date = createElement("time");
+        try {
+          const d = new Date(c.createdAt);
+          date.textContent = isNaN(d.getTime()) ? c.createdAt : d.toLocaleString();
+        } catch {
+          date.textContent = c.createdAt;
+        }
+        meta.append(author, createElement("span", "rbdb-card__comment-meta-sep"), date);
+        const body = createElement("div", "rbdb-card__comment-body");
+        body.textContent = c.body;
+        const actions = createElement("div", "rbdb-card__comment-actions");
+        const canDelete = Boolean(user && c.userId && `${c.userId}` === `${user.userId}`);
+        if (canDelete) {
+          const deleteButton = createElement(
+            "button",
+            "rbdb-card__comment-action rbdb-card__comment-delete",
+          ) as HTMLButtonElement;
+          deleteButton.type = "button";
+          deleteButton.textContent = "Delete";
+          deleteButton.addEventListener("click", () => {
+            if (deleteButton.disabled) return;
+            void handleDelete(c.id, deleteButton);
+          });
+          actions.append(deleteButton);
+        }
+
+        const reportButton = createElement(
+          "button",
+          "rbdb-card__comment-action rbdb-card__comment-report",
+        ) as HTMLButtonElement;
+        reportButton.type = "button";
+        const alreadyReported = reportedComments.has(c.id) || c.moderated || (c.reportCount ?? 0) > 0;
+        if (alreadyReported) {
+          reportButton.textContent = c.moderated ? "Moderated" : "Reported";
+          reportButton.disabled = true;
+          reportButton.dataset.state = c.moderated ? "removed" : "reported";
+        } else {
+          reportButton.textContent = "Report";
+        }
+        reportButton.addEventListener("click", () => {
+          if (reportButton.disabled) return;
+          void handleReport(c.id, reportButton);
+        });
+        actions.append(reportButton);
+        item.append(meta, body, actions);
+        elements.commentsList.append(item);
+      }
+    }
+
+    // Build pager options
+    elements.commentsPager.innerHTML = "";
+    let pages = 0;
+    if (typeof total === "number") {
+      pages = Math.max(1, Math.ceil(total / pageSize));
+    } else {
+      // If total unknown, provide at least current page and a couple following
+      pages = Math.max(1, page + (comments.length === pageSize ? 1 : 0));
+    }
+
+    for (let p = 1; p <= pages; p += 1) {
+      const option = document.createElement("option");
+      option.value = `${p}`;
+      option.textContent = `Page ${p}`;
+      if (p === page) option.selected = true;
+      elements.commentsPager.append(option);
+    }
+
+    elements.commentsPrev.disabled = page <= 1;
+    elements.commentsNext.disabled = page >= pages;
+  }
+
+  async function handleSubmitComment() {
+    if (!user) {
+      setCommentsStatus("Sign in to Roblox to post comments.", "error");
+      return;
+    }
+    if (isPostingComment) {
+      return;
+    }
+    const text = elements.commentsInput.value.trim();
+    if (!text) {
+      setCommentsStatus("Enter a comment before posting.", "error");
+      return;
+    }
+    isPostingComment = true;
+    elements.commentsSubmit.disabled = true;
+    elements.commentsSubmit.dataset.state = "sending";
+    elements.commentsSubmit.textContent = "Posting…";
+    try {
+      await backendRequest<CommentEntry>(
+        `/api/games/${universeId}/comments`,
+        backendBase,
+        {
+          method: "POST",
+          body: { userId: user.userId, username: user.username, body: text },
+        },
+      );
+      elements.commentsInput.value = "";
+      updateComposerCounter();
+      setCommentsStatus("Comment posted!", "success");
+      commentsPageNum = 1;
+      await requestComments(commentsPageNum, commentsPageSize, { showLoading: false });
+      window.setTimeout(() => {
+        if (elements.commentsStatus.textContent === "Comment posted!") {
+          setCommentsStatus(null);
+        }
+      }, 3500);
+    } catch (error) {
+      console.warn(logPrefix, "Failed to submit comment", error);
+      setCommentsStatus(error instanceof Error ? error.message : "Unable to post comment.", "error");
+    } finally {
+      isPostingComment = false;
+      elements.commentsSubmit.disabled = !user;
+      elements.commentsSubmit.dataset.state = "";
+      elements.commentsSubmit.textContent = "Post";
+    }
+  }
+
+  async function handleReport(commentId: string, control?: HTMLButtonElement) {
+    if (reportedComments.has(commentId)) {
+      return;
+    }
+    if (control) {
+      control.disabled = true;
+      control.dataset.state = "sending";
+      control.textContent = "Reporting…";
+    }
+    try {
+      await backendRequest(
+        `/api/games/${universeId}/comments/${commentId}/report`,
+        backendBase,
+        {
+          method: "POST",
+          body: user ? { userId: user.userId } : {},
+        },
+      );
+      reportedComments.add(commentId);
+      if (control) {
+        control.dataset.state = "reported";
+        control.textContent = "Reported";
+      }
+      setCommentsStatus("Thanks for the report!", "success");
+      window.setTimeout(() => {
+        // Only clear if message still visible and no other message set
+        if (elements.commentsStatus.textContent === "Thanks for the report!") {
+          setCommentsStatus(null);
+        }
+      }, 4000);
+      void requestComments(commentsPageNum, commentsPageSize, { showLoading: false });
+    } catch (error) {
+      console.warn(logPrefix, "Failed to report comment", error);
+      if (control) {
+        control.disabled = false;
+        control.dataset.state = "";
+        control.textContent = "Report";
+      }
+      setCommentsStatus(error instanceof Error ? error.message : "Unable to send report.", "error");
+    }
+  }
+
+  async function handleDelete(commentId: string, control?: HTMLButtonElement) {
+    if (!user) {
+      setCommentsStatus("Sign in to Roblox to manage your comments.", "error");
+      return;
+    }
+    if (control) {
+      control.disabled = true;
+      control.dataset.state = "sending";
+      control.textContent = "Deleting…";
+    }
+    try {
+      await backendRequest(
+        `/api/games/${universeId}/comments/${commentId}`,
+        backendBase,
+        {
+          method: "DELETE",
+          body: { userId: user.userId },
+        },
+      );
+      setCommentsStatus("Comment removed.", "success");
+      window.setTimeout(() => {
+        if (elements.commentsStatus.textContent === "Comment removed.") {
+          setCommentsStatus(null);
+        }
+      }, 3500);
+      await requestComments(commentsPageNum, commentsPageSize, { showLoading: false });
+    } catch (error) {
+      console.warn(logPrefix, "Failed to delete comment", error);
+      if (control) {
+        control.disabled = false;
+        control.dataset.state = "";
+        control.textContent = "Delete";
+      }
+      setCommentsStatus(error instanceof Error ? error.message : "Unable to delete comment.", "error");
     }
   }
 
@@ -999,6 +1370,12 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
       state.summary = await requestSummary(universeId, user, backendBase);
       setStatus("idle");
       render();
+      // Refresh comments alongside ratings
+      try {
+        void requestComments(commentsPageNum, commentsPageSize);
+      } catch {
+        // ignore
+      }
     } catch (error) {
       console.warn(logPrefix, "Failed to load ratings", error);
       setStatus("error");
@@ -1074,6 +1451,31 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
 
   elements.retryButton.addEventListener("click", () => {
     void refresh();
+  });
+
+  elements.commentsInput.addEventListener("input", () => {
+    updateComposerCounter();
+  });
+
+  elements.commentsComposer.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handleSubmitComment();
+  });
+
+  // Comments pager event handlers
+  elements.commentsPrev.addEventListener("click", () => {
+    if (commentsPageNum <= 1) return;
+    commentsPageNum -= 1;
+    void requestComments(commentsPageNum, commentsPageSize);
+  });
+  elements.commentsNext.addEventListener("click", () => {
+    commentsPageNum += 1;
+    void requestComments(commentsPageNum, commentsPageSize);
+  });
+  elements.commentsPager.addEventListener("change", () => {
+    const val = Number.parseInt(elements.commentsPager.value, 10) || 1;
+    commentsPageNum = val;
+    void requestComments(commentsPageNum, commentsPageSize);
   });
 
   void refresh();
