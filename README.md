@@ -8,10 +8,6 @@ RBDb adds a community-driven 5★ rating widget to Roblox experience pages and s
 - Works with both light and dark Roblox themes
 - Fully client-side content script – no background or popup UI required
 
-## Install
-You can install the addon through the **Firefox Extension Store** [here](https://addons.mozilla.org/en-US/firefox/addon/rbdb-roblox-ratings/).
-There is currently *no* Chrome version of the extension. (it is a work in progress though!)
-
 ## Prerequisites
 - Node.js 18.18 or newer (matching the backend requirement)
 - npm (ships with Node)
@@ -53,8 +49,8 @@ npm run build:firefox
 
 ### Custom backend origin
 By default the widget targets `http://localhost:4000`. To point it at a different API, define `RBDB_BACKEND_URL` before the Roblox page loads (for example through another content script or a snippet injected by your deployment).
-The backend starting in version 0.1.2 will not be up to date due to moderation features which will be upcoming.
-## Load into Chrome/Edge (BROKEN ! ! !)
+
+## Load into Chrome/Edge
 1. Run `npm run build`.
 2. Open `chrome://extensions` (or `edge://extensions`).
 3. Enable **Developer mode**.
