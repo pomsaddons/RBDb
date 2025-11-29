@@ -10,7 +10,7 @@ RBDb adds a community-driven 5★ rating widget to Roblox experience pages and s
 
 ## Install
 [<img src="https://github.com/user-attachments/assets/e021f950-2ecb-4573-9ab9-5cd1abc9df47" width="145">](https://addons.mozilla.org/en-US/firefox/addon/rbdb-roblox-ratings/)
-[<img src="https://github.com/user-attachments/assets/a9cc1fca-bbe5-4e01-8bd9-50bbc92418e3" width="145">](https://chromewebstore.google.com/detail/rbdb-roblox-ratings/kmffdlilmjjbmedalificilbhplpciec)
+[<img src="https://github.com/user-attachments/assets/155a00a3-45a8-42a6-be3f-7e9c70f7f15e" width="145">](https://chromewebstore.google.com/detail/rbdb-roblox-ratings/kmffdlilmjjbmedalificilbhplpciec)
 
 ## Prerequisites
 - Node.js 18.18 or newer (matching the backend requirement)
