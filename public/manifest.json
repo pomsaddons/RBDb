@@ -1,25 +1,28 @@
 {
   "manifest_version": 3,
   "name": "RBDb - Roblox Ratings",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Rate Roblox experiences with the RBDb community.",
   "icons": {
-    "128": "icons/icon.png"
+    "128": "icons/128.png"
   },
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "permissions": [],
   "host_permissions": [
     "https://www.roblox.com/*",
+    "https://thumbnails.roblox.com/*",
+    "https://users.roblox.com/*",
     "https://rbdb.pompompurin.tech/api/*",
-    "http://localhost:4000/*",
-    "http://127.0.0.1:4000/*"
+    "http://localhost:4000/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://www.roblox.com/games/*"],
+      "matches": [
+        "https://www.roblox.com/games/*",
+        "https://www.roblox.com/users/*/profile*"
+      ],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"

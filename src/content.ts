@@ -23,19 +23,13 @@ type RatingSummary = {
 
 type CommentEntry = {
   id: string;
-  userId?: string | null;
-  username?: string | null;
-  body: string;
+  userId: string;
+  username: string | null;
+  text: string;
   createdAt: string;
-  moderated?: boolean;
-  reportCount?: number;
-};
-
-type CommentsPage = {
-  comments: CommentEntry[];
-  total?: number; // total comments (optional)
-  page?: number;
-  pageSize?: number;
+  reported?: number;
+  deleted?: boolean;
+  avatarUrl?: string | null;
 };
 
 type AuthenticatedUser = {
@@ -49,6 +43,9 @@ type WidgetState = {
   hovered: number | null;
   status: "idle" | "loading" | "submitting" | "error";
   errorMessage: string | null;
+  comments?: CommentEntry[];
+  curatorReviews?: any[];
+  maliciousUsers?: MaliciousUserEntry[];
 };
 
 const RBDB_WIDGET_ID = "rbdb-rating-card";
@@ -355,11 +352,10 @@ function applyThemeFromPage(source: HTMLElement, container: HTMLElement) {
   // Compute theme-aware surfaces to avoid bright buttons on dark pages
   const bgL = relativeLuminance(backgroundRgba);
   const isLight = bgL > 0.55;
-  const surfaceFallback = isLight ? "rgba(20,20,20,0.04)" : "rgba(255,255,255,0.14)";
-  const trackFallback = isLight ? "rgba(20,20,20,0.16)" : "rgba(255,255,255,0.30)";
-  const surface = withAlpha(finalTextRgba, isLight ? 0.04 : 0.14, surfaceFallback);
-  const trackStrength = isLight ? 0.2 : 0.34;
-  const track = withAlpha(finalTextRgba, trackStrength, trackFallback);
+  const surfaceFallback = isLight ? "rgba(20,20,20,0.04)" : "rgba(242,244,245,0.06)";
+  const trackFallback = isLight ? "rgba(20,20,20,0.10)" : "rgba(242,244,245,0.12)";
+  const surface = withAlpha(finalTextRgba, isLight ? 0.04 : 0.06, surfaceFallback);
+  const track = withAlpha(finalTextRgba, isLight ? 0.10 : 0.14, trackFallback);
   container.style.setProperty("--rbdb-surface", surface);
   container.style.setProperty("--rbdb-track", track);
 }
@@ -463,6 +459,156 @@ function formatAverage(summary: RatingSummary | null): string {
   return summary.averageRating.toFixed(2);
 }
 
+const usernameToIdCache = new Map<string, number>();
+const avatarUrlCache = new Map<number, string | null>();
+
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  const result: T[][] = [];
+  for (let idx = 0; idx < items.length; idx += chunkSize) {
+    result.push(items.slice(idx, idx + chunkSize));
+  }
+  return result;
+}
+
+async function lookupRobloxUserIds(usernames: string[]): Promise<Map<string, number>> {
+  const sanitized = usernames.map((name) => name.trim()).filter(Boolean);
+  const unique = Array.from(new Set(sanitized));
+  const matches = new Map<string, number>();
+  if (unique.length === 0) {
+    return matches;
+  }
+
+  for (const chunk of chunkArray(unique, 50)) {
+    try {
+      const response = await fetch("https://users.roblox.com/v1/usernames/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ usernames: chunk, excludeBannedUsers: true }),
+      });
+      if (!response.ok) {
+        console.warn(logPrefix, "Username lookup failed", response.status, response.statusText);
+        continue;
+      }
+      const payload = (await response.json()) as {
+        data: { requestedUsername: string; id: number }[];
+      };
+      for (const entry of payload.data) {
+        matches.set(entry.requestedUsername.toLowerCase(), entry.id);
+      }
+    } catch (error) {
+      console.warn(logPrefix, "Username lookup error", error);
+    }
+  }
+
+  return matches;
+}
+
+async function fetchHeadshotUrls(userIds: number[]): Promise<Map<number, string | null>> {
+  const ids = Array.from(new Set(userIds.filter((id) => Number.isFinite(id) && id > 0)));
+  const results = new Map<number, string | null>();
+  if (ids.length === 0) {
+    return results;
+  }
+
+  for (const chunk of chunkArray(ids, 25)) {
+    const params = new URLSearchParams({
+      userIds: chunk.join(","),
+      size: "420x420",
+      format: "Png",
+      isCircular: "false",
+    });
+    const url = `https://thumbnails.roblox.com/v1/users/avatar-headshot?${params.toString()}`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.warn(logPrefix, "Headshot request failed", response.status, response.statusText);
+        continue;
+      }
+      const payload = (await response.json()) as {
+        data: { targetId: number; imageUrl: string | null }[];
+      };
+      for (const entry of payload.data) {
+        results.set(entry.targetId, entry.imageUrl ?? null);
+      }
+    } catch (error) {
+      console.warn(logPrefix, "Headshot request error", error);
+    }
+  }
+
+  return results;
+}
+
+async function hydrateCommentAvatars(comments: CommentEntry[] | undefined): Promise<void> {
+  if (!comments || comments.length === 0) return;
+
+  const usernamesNeedingIds = new Map<string, string>();
+  const idsNeedingHeadshots = new Set<number>();
+
+  for (const comment of comments) {
+    const parsedId = Number.parseInt(comment.userId, 10);
+    if (Number.isFinite(parsedId) && parsedId > 0) {
+      if (avatarUrlCache.has(parsedId)) {
+        comment.avatarUrl = avatarUrlCache.get(parsedId);
+      } else {
+        idsNeedingHeadshots.add(parsedId);
+      }
+      continue;
+    }
+
+    if (comment.username) {
+      const lookupKey = comment.username.trim().toLowerCase();
+      if (usernameToIdCache.has(lookupKey)) {
+        const resolvedId = usernameToIdCache.get(lookupKey)!;
+        comment.userId = `${resolvedId}`;
+        if (avatarUrlCache.has(resolvedId)) {
+          comment.avatarUrl = avatarUrlCache.get(resolvedId);
+        } else {
+          idsNeedingHeadshots.add(resolvedId);
+        }
+      } else {
+        usernamesNeedingIds.set(lookupKey, comment.username.trim());
+      }
+    }
+  }
+
+  if (usernamesNeedingIds.size > 0) {
+    const lookupResults = await lookupRobloxUserIds(Array.from(usernamesNeedingIds.values()));
+    for (const [usernameKey, userId] of lookupResults.entries()) {
+      usernameToIdCache.set(usernameKey, userId);
+      for (const comment of comments) {
+        if (comment.username && comment.username.trim().toLowerCase() === usernameKey) {
+          comment.userId = `${userId}`;
+          if (avatarUrlCache.has(userId)) {
+            comment.avatarUrl = avatarUrlCache.get(userId);
+          } else {
+            idsNeedingHeadshots.add(userId);
+          }
+        }
+      }
+    }
+  }
+
+  if (idsNeedingHeadshots.size > 0) {
+    const headshots = await fetchHeadshotUrls(Array.from(idsNeedingHeadshots));
+    for (const [userId, imageUrl] of headshots.entries()) {
+      avatarUrlCache.set(userId, imageUrl);
+      for (const comment of comments) {
+        if (Number.parseInt(comment.userId, 10) === userId) {
+          comment.avatarUrl = imageUrl;
+        }
+      }
+    }
+  }
+
+  // Final pass to hydrate from cache when available
+  for (const comment of comments) {
+    const parsedId = Number.parseInt(comment.userId, 10);
+    if (Number.isFinite(parsedId) && avatarUrlCache.has(parsedId) && !comment.avatarUrl) {
+      comment.avatarUrl = avatarUrlCache.get(parsedId);
+    }
+  }
+}
+
 function createElement<K extends keyof HTMLElementTagNameMap>(
   tagName: K,
   className?: string,
@@ -472,7 +618,7 @@ function createElement<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
-function createWidgetContainer(): {
+function createWidgetContainer(isProfile = false): {
   root: HTMLElement;
   eyebrow: HTMLElement;
   title: HTMLElement;
@@ -483,23 +629,22 @@ function createWidgetContainer(): {
   distributionWrapper: HTMLElement;
   distributionRows: HTMLElement[];
   distributionEmpty: HTMLElement;
+  details: HTMLElement;
+  userProfileContainer: HTMLElement;
+  curatorWrapper: HTMLElement;
+  curatorList: HTMLElement;
   commentsWrapper: HTMLElement;
   commentsList: HTMLElement;
-  commentsComposer: HTMLFormElement;
-  commentsInput: HTMLTextAreaElement;
-  commentsSubmit: HTMLButtonElement;
-  commentsCount: HTMLElement;
-  commentsPager: HTMLSelectElement;
-  commentsPrev: HTMLButtonElement;
-  commentsNext: HTMLButtonElement;
-  commentsStatus: HTMLElement;
-  details: HTMLElement;
+  commentForm: HTMLFormElement;
+  commentInput: HTMLTextAreaElement;
+  commentSubmit: HTMLButtonElement;
   toggleButton: HTMLButtonElement;
   minimizeButton: HTMLButtonElement;
   status: HTMLElement;
   error: HTMLElement;
   clearButton: HTMLButtonElement;
   retryButton: HTMLButtonElement;
+  maliciousWarning: HTMLElement;
 } {
   const root = createElement("section", "rbdb-card");
   root.id = RBDB_WIDGET_ID;
@@ -511,7 +656,7 @@ function createWidgetContainer(): {
   const eyebrow = createElement("div", "rbdb-card__eyebrow");
   eyebrow.textContent = "RBDb community";
   const title = createElement("h3", "rbdb-card__title");
-  title.textContent = "How do you like this experience?";
+  title.textContent = isProfile ? "How do you like this user?" : "How do you like this experience?";
   headerLeft.append(eyebrow, title);
 
   const score = createElement("div", "rbdb-card__score");
@@ -574,66 +719,81 @@ function createWidgetContainer(): {
   distributionEmpty.textContent = "No ratings yet. Be the first to vote!";
   distributionWrapper.append(distributionEmpty);
 
+  // Curator reviews area
+  const curatorWrapper = createElement("div", "rbdb-card__curator");
+  const curatorTitle = createElement("h4");
+  curatorTitle.textContent = "Curator reviews";
+  const curatorList = createElement("div", "rbdb-card__curator-list");
+  curatorWrapper.append(curatorTitle, curatorList);
+
   // Comments area
   const commentsWrapper = createElement("div", "rbdb-card__comments");
-  const commentsTitle = createElement("h4", "rbdb-card__comments-title");
+  const commentsTitle = createElement("h4");
   commentsTitle.textContent = "Comments";
-  const commentsStatus = createElement("p", "rbdb-card__comments-status");
-  commentsStatus.textContent = "Loading comments…";
-  const commentsComposer = createElement("form", "rbdb-card__comments-composer") as HTMLFormElement;
-  const commentsInput = createElement("textarea", "rbdb-card__comments-input") as HTMLTextAreaElement;
-  commentsInput.rows = 2;
-  commentsInput.placeholder = "Share your thoughts";
-  const commentsComposerBar = createElement("div", "rbdb-card__comments-composer-bar");
-  const commentsCount = createElement("span", "rbdb-card__comments-count");
-  const commentsSubmit = createElement("button", "rbdb-card__comments-submit") as HTMLButtonElement;
-  commentsSubmit.type = "submit";
-  commentsSubmit.textContent = "Post";
-  commentsComposerBar.append(commentsCount, commentsSubmit);
-  commentsComposer.append(commentsInput, commentsComposerBar);
   const commentsList = createElement("div", "rbdb-card__comments-list");
-
-  // Pager controls: prev, select page, next
-  const commentsPager = createElement("select", "rbdb-card__comments-pager") as HTMLSelectElement;
-  const commentsPrev = createElement("button", "rbdb-card__comments-prev") as HTMLButtonElement;
-  commentsPrev.type = "button";
-  commentsPrev.textContent = "Prev";
-  commentsPrev.setAttribute("aria-label", "Go to previous page");
-  const commentsNext = createElement("button", "rbdb-card__comments-next") as HTMLButtonElement;
-  commentsNext.type = "button";
-  commentsNext.textContent = "Next";
-  commentsNext.setAttribute("aria-label", "Go to next page");
-
-  const pagerWrap = createElement("div", "rbdb-card__comments-pager-wrap");
-  pagerWrap.append(commentsPrev, commentsPager, commentsNext);
-
-  commentsWrapper.append(commentsTitle, commentsStatus, commentsComposer, commentsList, pagerWrap);
+  const commentForm = createElement("form", "rbdb-card__comment-form") as HTMLFormElement;
+  const commentInput = createElement("textarea", "rbdb-card__comment-input") as HTMLTextAreaElement;
+  commentInput.placeholder = isProfile ? "Share your thoughts about this user..." : "Share your thoughts about this game...";
+  const commentSubmit = createElement("button", "rbdb-card__comment-submit") as HTMLButtonElement;
+  commentSubmit.type = "submit";
+  commentSubmit.textContent = "Post";
+  commentForm.append(commentInput, commentSubmit);
+  commentsWrapper.append(commentsTitle, commentsList, commentForm);
 
   const actions = createElement("div", "rbdb-card__actions");
+  // Removed clearButton as per request
   const clearButton = createElement("button", "rbdb-card__clear") as HTMLButtonElement;
   clearButton.type = "button";
   clearButton.textContent = "Remove my rating";
   clearButton.hidden = true;
-
-  const ratingFooter = createElement("div", "rbdb-card__rating-footer");
-  ratingFooter.append(clearButton);
+  clearButton.style.display = "none"; // Ensure it's hidden
 
   const retryButton = createElement("button", "rbdb-card__retry") as HTMLButtonElement;
   retryButton.type = "button";
   retryButton.textContent = "Try again";
   retryButton.hidden = true;
-  actions.append(retryButton);
+  actions.append(retryButton); // Removed clearButton from append
 
   const status = createElement("p", "rbdb-card__status");
   status.textContent = "Loading ratings…";
   const error = createElement("p", "rbdb-card__error");
   error.hidden = true;
 
+  const maliciousWarning = createElement("div", "rbdb-card__malicious");
+  maliciousWarning.hidden = true;
+  maliciousWarning.style.backgroundColor = "#ffebee";
+  maliciousWarning.style.color = "#c62828";
+  // Full width at the top, compensating for card padding
+  maliciousWarning.style.margin = "calc(-16px * var(--rbdb-scale)) calc(-16px * var(--rbdb-scale)) calc(16px * var(--rbdb-scale)) calc(-16px * var(--rbdb-scale))";
+  maliciousWarning.style.padding = "calc(16px * var(--rbdb-scale))";
+  maliciousWarning.style.paddingRight = "calc(48px * var(--rbdb-scale))"; // Avoid overlap with minimize button
+  maliciousWarning.style.borderBottom = "1px solid #ef9a9a";
+  maliciousWarning.style.fontSize = "13px";
+  maliciousWarning.style.lineHeight = "1.4";
+  maliciousWarning.style.borderRadius = "calc(12px * var(--rbdb-scale)) calc(12px * var(--rbdb-scale)) 0 0"; // Match card top radius
+
   const details = createElement("div", "rbdb-card__details");
-  details.append(distributionWrapper, ratingFooter, commentsWrapper, actions);
+  details.append(distributionWrapper, curatorWrapper, commentsWrapper, actions);
   details.hidden = true;
 
-  root.append(header, hint, details, status, error);
+  const userProfileContainer = createElement("div", "rbdb-card__user-profile");
+  userProfileContainer.hidden = true;
+  userProfileContainer.style.position = "absolute";
+  userProfileContainer.style.top = "0";
+  userProfileContainer.style.left = "0";
+  userProfileContainer.style.width = "100%";
+  userProfileContainer.style.height = "100%";
+  userProfileContainer.style.backgroundColor = "var(--rbdb-card-bg)";
+  userProfileContainer.style.zIndex = "100";
+  userProfileContainer.style.overflowY = "auto";
+  userProfileContainer.style.padding = "16px";
+  userProfileContainer.style.boxSizing = "border-box";
+  userProfileContainer.style.borderRadius = "inherit"; // Match card radius
+
+  // Insert malicious warning at the top
+  root.append(maliciousWarning, header, hint, details, userProfileContainer, status, error);
+  // Ensure minimize button is always last (top-most in stacking order)
+  root.append(minimizeButton);
 
   return {
     root,
@@ -646,23 +806,22 @@ function createWidgetContainer(): {
     distributionWrapper,
     distributionRows,
     distributionEmpty,
+    details,
+    userProfileContainer,
+    curatorWrapper,
+    curatorList,
     commentsWrapper,
     commentsList,
-    commentsComposer,
-    commentsInput,
-    commentsSubmit,
-    commentsCount,
-    commentsPager,
-    commentsPrev,
-    commentsNext,
-    commentsStatus,
-    details,
+    commentForm,
+    commentInput,
+    commentSubmit,
     toggleButton,
     minimizeButton,
     status,
     error,
     clearButton,
     retryButton,
+    maliciousWarning,
   };
 }
 
@@ -709,6 +868,60 @@ async function removeRating(
   );
 }
 
+async function requestComments(universeId: number, backendBase: string): Promise<CommentEntry[]> {
+  const response = await backendRequest<{ comments: CommentEntry[] }>(`/api/games/${universeId}/comments`, backendBase, {
+    method: "GET",
+  });
+  return response.comments;
+}
+
+async function requestCuratorReviews(backendBase: string): Promise<{ lastFetched: string | null; reviews: any[] }> {
+  return backendRequest<{ lastFetched: string | null; reviews: any[] }>(`/api/curator-reviews`, backendBase, {
+    method: "GET",
+  });
+}
+
+async function requestUserComments(userId: number, backendBase: string) {
+  return backendRequest<{ userId: number; total: number; comments: CommentEntry[] }>(`/api/users/${userId}/comments`, backendBase, {
+    method: "GET",
+  });
+}
+
+async function requestUserRatings(userId: number, backendBase: string) {
+  return backendRequest<{ userId: number; total: number; ratings: any[] }>(`/api/users/${userId}/ratings`, backendBase, {
+    method: "GET",
+  });
+}
+
+async function submitComment(
+  universeId: number,
+  user: AuthenticatedUser,
+  text: string,
+  backendBase: string,
+): Promise<CommentEntry> {
+  return backendRequest<CommentEntry>(`/api/games/${universeId}/comments`, backendBase, {
+    method: "POST",
+    body: { userId: `${user.userId}`, username: user.username, text },
+  });
+}
+
+async function reportComment(universeId: number, commentId: string, backendBase: string) {
+  return backendRequest(`/api/games/${universeId}/comments/${commentId}/report`, backendBase, {
+    method: "POST",
+  });
+}
+
+type MaliciousUserEntry = {
+  id: string;
+  userID: string;
+  title: string;
+  author: string;
+  summary: string;
+  body: string;
+  createdAt: string;
+  source: string;
+};
+
 function injectWidget(target: Element, universeId: number, backendBase: string) {
   if (document.getElementById(RBDB_WIDGET_ID)) {
     return;
@@ -722,7 +935,8 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     errorMessage: null,
   };
 
-  const elements = createWidgetContainer();
+  const isProfile = universeId < 0;
+  const elements = createWidgetContainer(isProfile);
   // Create a fixed-position dock container to isolate placement
   const dock = document.createElement("div");
   dock.className = "rbdb-dock";
@@ -778,6 +992,11 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     dock.style.left = "auto";
     dock.style.bottom = "auto";
     dock.style.top = `${top}px`;
+    
+    // Adjust for profile page layout if needed
+    if (isProfile) {
+      dock.style.top = `${top + 20}px`;
+    }
   };
 
   // Adaptive scale based on viewport width & device pixel ratio.
@@ -806,12 +1025,207 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
   });
   window.addEventListener("resize", placeRightOfContent);
   // Avoid repositioning on scroll to prevent jitter; keep fixed under navbar
-  window.addEventListener("resize", updateScale);
+  
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", updateScale);
     // visualViewport scroll updates scale can cause jitter; disable for stability
     // window.visualViewport.addEventListener("scroll", updateScale);
   }
+
+  function renderCuratorReviews() {
+    const list = elements.curatorList;
+    list.innerHTML = "";
+    const reviews = state.curatorReviews ?? [];
+    if (isProfile || !reviews || reviews.length === 0) {
+      elements.curatorWrapper.hidden = true;
+      return;
+    }
+    elements.curatorWrapper.hidden = false;
+
+    for (const r of reviews.slice().reverse()) {
+      const item = createElement("div", "rbdb-curator-item");
+      const title = createElement("strong");
+      title.textContent = `${r.title ?? "Curator review"} — ${r.score ?? ""}`;
+      const meta = createElement("div", "rbdb-curator-meta");
+      meta.textContent = `${r.author ?? r.source ?? "Curator"} • ${new Date(r.createdAt ?? Date.now()).toLocaleDateString()}`;
+      const summary = createElement("div", "rbdb-curator-summary");
+      summary.textContent = r.summary ?? (r.body ? `${(r.body as string).slice(0, 200)}…` : "");
+      item.append(title, meta, summary);
+      list.append(item);
+    }
+  }
+
+  async function navigateToUserProfile(userId: number) {
+    // Show user profile container
+    elements.userProfileContainer.hidden = false;
+    elements.userProfileContainer.innerHTML = "Loading profile…";
+    
+    try {
+      const [commentsPayload, ratingsPayload] = await Promise.all([
+        requestUserComments(userId, backendBase),
+        requestUserRatings(userId, backendBase),
+      ]);
+      
+      elements.userProfileContainer.innerHTML = "";
+      
+      // Header with Back button
+      const headerRow = createElement("div", "rbdb-user-profile-header-row");
+      headerRow.style.display = "flex";
+      headerRow.style.alignItems = "center";
+      headerRow.style.marginBottom = "16px";
+      
+      const backBtn = createElement("button", "rbdb-user-profile-back");
+      backBtn.textContent = "←";
+      backBtn.title = "Go back";
+      backBtn.style.background = "none";
+      backBtn.style.border = "none";
+      backBtn.style.color = "inherit";
+      backBtn.style.cursor = "pointer";
+      backBtn.style.fontSize = "1.2em";
+      backBtn.style.padding = "0 8px 0 0";
+      backBtn.style.marginRight = "4px";
+      backBtn.addEventListener("click", navigateBack);
+      
+      const headerTitle = createElement("div", "rbdb-user-profile-title");
+      headerTitle.style.fontWeight = "600";
+      headerTitle.textContent = `User ${userId}`;
+      
+      headerRow.append(backBtn, headerTitle);
+      elements.userProfileContainer.append(headerRow);
+
+      // Check malicious status
+      const maliciousEntry = state.maliciousUsers?.find(u => u.userID === `${userId}`);
+      if (maliciousEntry) {
+        const warning = createElement("div", "rbdb-user-profile-warning");
+        warning.style.backgroundColor = "#ffebee";
+        warning.style.color = "#c62828";
+        warning.style.padding = "12px";
+        warning.style.marginBottom = "16px";
+        warning.style.borderRadius = "8px";
+        warning.style.border = "1px solid #ef9a9a";
+        
+        const wTitle = createElement("strong");
+        wTitle.textContent = `⚠️ ${maliciousEntry.title || "Warning"}`;
+        wTitle.style.display = "block";
+        wTitle.style.marginBottom = "4px";
+        
+        const wBody = createElement("div");
+        wBody.textContent = maliciousEntry.summary || maliciousEntry.body || "This user has been flagged.";
+        
+        warning.append(wTitle, wBody);
+        elements.userProfileContainer.append(warning);
+      }
+
+      const stats = createElement("div", "rbdb-user-profile-stats");
+      stats.style.marginBottom = "16px";
+      stats.style.fontSize = "0.9em";
+      stats.style.color = "var(--rbdb-subtle)";
+      stats.textContent = `${commentsPayload.total} comments • ${ratingsPayload.total} ratings`;
+      elements.userProfileContainer.append(stats);
+
+      if (commentsPayload.comments && commentsPayload.comments.length > 0) {
+        const ctitle = createElement("div", "rbdb-user-profile-subtitle");
+        ctitle.textContent = "RECENT COMMENTS";
+        ctitle.style.fontSize = "0.75rem";
+        ctitle.style.textTransform = "uppercase";
+        ctitle.style.letterSpacing = "0.05em";
+        ctitle.style.color = "var(--rbdb-subtle)";
+        ctitle.style.marginBottom = "8px";
+        elements.userProfileContainer.append(ctitle);
+
+        const cl = createElement("div", "rbdb-user-profile-comments");
+        cl.style.display = "flex";
+        cl.style.flexDirection = "column";
+        cl.style.gap = "8px";
+        cl.style.marginBottom = "24px";
+
+        for (const c of (commentsPayload.comments || []).slice().reverse().slice(0, 5)) {
+          const ci = createElement("div", "rbdb-user-profile-comment");
+          ci.style.padding = "10px";
+          ci.style.backgroundColor = "var(--rbdb-surface)";
+          ci.style.borderRadius = "8px";
+          ci.style.fontSize = "0.9rem";
+          
+          const date = createElement("div");
+          date.style.fontSize = "0.75rem";
+          date.style.color = "var(--rbdb-subtle)";
+          date.style.marginBottom = "4px";
+          date.textContent = new Date(c.createdAt).toLocaleDateString();
+          
+          const text = createElement("div");
+          text.textContent = c.text;
+          
+          ci.append(date, text);
+          cl.append(ci);
+        }
+        elements.userProfileContainer.append(cl);
+      }
+
+      if (ratingsPayload.ratings && ratingsPayload.ratings.length > 0) {
+        const rtitle = createElement("div", "rbdb-user-profile-subtitle");
+        rtitle.textContent = "RECENT RATINGS";
+        rtitle.style.fontSize = "0.75rem";
+        rtitle.style.textTransform = "uppercase";
+        rtitle.style.letterSpacing = "0.05em";
+        rtitle.style.color = "var(--rbdb-subtle)";
+        rtitle.style.marginBottom = "8px";
+        elements.userProfileContainer.append(rtitle);
+
+        const rl = createElement("div", "rbdb-user-profile-ratings");
+        rl.style.display = "flex";
+        rl.style.flexDirection = "column";
+        rl.style.gap = "8px";
+
+        for (const r of (ratingsPayload.ratings || []).slice().reverse().slice(0, 5)) {
+          const ri = createElement("div", "rbdb-user-profile-rating");
+          ri.style.padding = "10px";
+          ri.style.backgroundColor = "var(--rbdb-surface)";
+          ri.style.borderRadius = "8px";
+          ri.style.fontSize = "0.9rem";
+          
+          const topRow = createElement("div");
+          topRow.style.display = "flex";
+          topRow.style.justifyContent = "space-between";
+          topRow.style.marginBottom = "4px";
+          
+          const uni = createElement("span");
+          uni.textContent = `Universe ${r.universeId}`;
+          uni.style.fontWeight = "500";
+          
+          const score = createElement("span");
+          score.textContent = `${r.rating} ★`;
+          score.style.color = "var(--rbdb-accent)";
+          
+          topRow.append(uni, score);
+          
+          const userLine = createElement("div");
+          userLine.style.fontSize = "0.8rem";
+          userLine.style.color = "var(--rbdb-subtle)";
+          userLine.textContent = r.username ?? "Unknown user";
+          
+          ri.append(topRow, userLine);
+          rl.append(ri);
+        }
+        elements.userProfileContainer.append(rl);
+      }
+      
+    } catch (err) {
+      elements.userProfileContainer.textContent = "Failed to load profile";
+      console.warn(logPrefix, "User profile load failed", err);
+      
+      // Add back button even on error
+      const backBtn = createElement("button", "rbdb-user-profile-back-error");
+      backBtn.textContent = "← Go back";
+      backBtn.style.marginTop = "16px";
+      backBtn.addEventListener("click", navigateBack);
+      elements.userProfileContainer.append(backBtn);
+    }
+  }
+
+  function navigateBack() {
+    elements.userProfileContainer.hidden = true;
+  }
+
   let expanded = false;
 
   function updateMinimizedUI() {
@@ -942,13 +1356,6 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
       // If details just became visible, animate its children like other content
       if (wasHidden) {
         animateDetailsSequence();
-        // Load comments when details are first shown
-        try {
-          // kick off comments load but don't await
-          void requestComments(commentsPageNum, commentsPageSize);
-        } catch {
-          // ignore
-        }
       }
     }
   }
@@ -1013,294 +1420,6 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     }
   }
 
-  function setCommentsStatus(message: string | null, tone: "info" | "error" | "success" = "info") {
-    if (!message) {
-      elements.commentsStatus.hidden = true;
-      elements.commentsStatus.textContent = "";
-      elements.commentsStatus.dataset.tone = "";
-      return;
-    }
-    elements.commentsStatus.hidden = false;
-    elements.commentsStatus.textContent = message;
-    elements.commentsStatus.dataset.tone = tone;
-  }
-
-  // Comments state and helpers
-  let commentsPageNum = 1;
-  const commentsPageSize = 5;
-  let commentsTotal = undefined as number | undefined;
-  const reportedComments = new Set<string>();
-  const COMMENT_MAX_LENGTH = 500;
-  let isPostingComment = false;
-
-  elements.commentsInput.maxLength = COMMENT_MAX_LENGTH;
-  elements.commentsCount.textContent = `0/${COMMENT_MAX_LENGTH}`;
-
-  function updateComposerAvailability() {
-    if (!user) {
-      elements.commentsInput.disabled = true;
-      elements.commentsSubmit.disabled = true;
-      elements.commentsInput.placeholder = "Sign in to Roblox to post comments";
-    } else {
-      elements.commentsInput.disabled = false;
-      elements.commentsSubmit.disabled = false;
-      elements.commentsInput.placeholder = "Share your thoughts";
-    }
-  }
-
-  function updateComposerCounter() {
-    const value = elements.commentsInput.value ?? "";
-    elements.commentsCount.textContent = `${value.length}/${COMMENT_MAX_LENGTH}`;
-  }
-
-  updateComposerAvailability();
-  updateComposerCounter();
-
-  async function requestComments(page: number, pageSize: number, options: { showLoading?: boolean } = {}) {
-    const { showLoading = true } = options;
-    if (showLoading) {
-      setCommentsStatus("Loading comments…", "info");
-    }
-    try {
-      const resp = await backendRequest<CommentsPage>(
-        `/api/games/${universeId}/comments`,
-        backendBase,
-        {
-          method: "GET",
-          searchParams: { page: `${page}`, pageSize: `${pageSize}` },
-        },
-      );
-
-      const payload = resp as CommentsPage | CommentEntry[];
-      const comments = Array.isArray((payload as CommentsPage).comments)
-        ? ((payload as CommentsPage).comments as CommentEntry[])
-        : Array.isArray(payload)
-          ? (payload as CommentEntry[])
-          : [];
-      commentsTotal = (payload && typeof (payload as CommentsPage).total === "number")
-        ? (payload as CommentsPage).total
-        : undefined;
-      renderComments(comments, page, pageSize, commentsTotal);
-      if (showLoading) {
-        setCommentsStatus(null);
-      }
-    } catch (error) {
-      console.warn(logPrefix, "Failed to load comments", error);
-      setCommentsStatus(error instanceof Error ? error.message : "Unable to load comments.", "error");
-      elements.commentsList.innerHTML = "";
-      elements.commentsPager.innerHTML = "";
-    }
-  }
-
-  function renderComments(comments: CommentEntry[], page: number, pageSize: number, total?: number) {
-    elements.commentsList.innerHTML = "";
-    if (!comments || comments.length === 0) {
-      const empty = createElement("p", "rbdb-card__comments-empty");
-      empty.textContent = "No comments yet.";
-      elements.commentsList.append(empty);
-    } else {
-      for (const c of comments) {
-        const item = createElement("div", "rbdb-card__comment");
-        const meta = createElement("div", "rbdb-card__comment-meta");
-        const author = createElement("strong");
-        author.textContent = c.username ?? `User ${c.userId ?? ""}`;
-        const date = createElement("time");
-        try {
-          const d = new Date(c.createdAt);
-          date.textContent = isNaN(d.getTime()) ? c.createdAt : d.toLocaleString();
-        } catch {
-          date.textContent = c.createdAt;
-        }
-        meta.append(author, createElement("span", "rbdb-card__comment-meta-sep"), date);
-        const body = createElement("div", "rbdb-card__comment-body");
-        body.textContent = c.body;
-        const actions = createElement("div", "rbdb-card__comment-actions");
-        const canDelete = Boolean(user && c.userId && `${c.userId}` === `${user.userId}`);
-        if (canDelete) {
-          const deleteButton = createElement(
-            "button",
-            "rbdb-card__comment-action rbdb-card__comment-delete",
-          ) as HTMLButtonElement;
-          deleteButton.type = "button";
-          deleteButton.textContent = "Delete";
-          deleteButton.addEventListener("click", () => {
-            if (deleteButton.disabled) return;
-            void handleDelete(c.id, deleteButton);
-          });
-          actions.append(deleteButton);
-        }
-
-        const reportButton = createElement(
-          "button",
-          "rbdb-card__comment-action rbdb-card__comment-report",
-        ) as HTMLButtonElement;
-        reportButton.type = "button";
-        const alreadyReported = reportedComments.has(c.id) || c.moderated || (c.reportCount ?? 0) > 0;
-        if (alreadyReported) {
-          reportButton.textContent = c.moderated ? "Moderated" : "Reported";
-          reportButton.disabled = true;
-          reportButton.dataset.state = c.moderated ? "removed" : "reported";
-        } else {
-          reportButton.textContent = "Report";
-        }
-        reportButton.addEventListener("click", () => {
-          if (reportButton.disabled) return;
-          void handleReport(c.id, reportButton);
-        });
-        actions.append(reportButton);
-        item.append(meta, body, actions);
-        elements.commentsList.append(item);
-      }
-    }
-
-    // Build pager options
-    elements.commentsPager.innerHTML = "";
-    let pages = 0;
-    if (typeof total === "number") {
-      pages = Math.max(1, Math.ceil(total / pageSize));
-    } else {
-      // If total unknown, provide at least current page and a couple following
-      pages = Math.max(1, page + (comments.length === pageSize ? 1 : 0));
-    }
-
-    for (let p = 1; p <= pages; p += 1) {
-      const option = document.createElement("option");
-      option.value = `${p}`;
-      option.textContent = `Page ${p}`;
-      if (p === page) option.selected = true;
-      elements.commentsPager.append(option);
-    }
-
-    elements.commentsPrev.disabled = page <= 1;
-    elements.commentsNext.disabled = page >= pages;
-  }
-
-  async function handleSubmitComment() {
-    if (!user) {
-      setCommentsStatus("Sign in to Roblox to post comments.", "error");
-      return;
-    }
-    if (isPostingComment) {
-      return;
-    }
-    const text = elements.commentsInput.value.trim();
-    if (!text) {
-      setCommentsStatus("Enter a comment before posting.", "error");
-      return;
-    }
-    isPostingComment = true;
-    elements.commentsSubmit.disabled = true;
-    elements.commentsSubmit.dataset.state = "sending";
-    elements.commentsSubmit.textContent = "Posting…";
-    try {
-      await backendRequest<CommentEntry>(
-        `/api/games/${universeId}/comments`,
-        backendBase,
-        {
-          method: "POST",
-          body: { userId: user.userId, username: user.username, body: text },
-        },
-      );
-      elements.commentsInput.value = "";
-      updateComposerCounter();
-      setCommentsStatus("Comment posted!", "success");
-      commentsPageNum = 1;
-      await requestComments(commentsPageNum, commentsPageSize, { showLoading: false });
-      window.setTimeout(() => {
-        if (elements.commentsStatus.textContent === "Comment posted!") {
-          setCommentsStatus(null);
-        }
-      }, 3500);
-    } catch (error) {
-      console.warn(logPrefix, "Failed to submit comment", error);
-      setCommentsStatus(error instanceof Error ? error.message : "Unable to post comment.", "error");
-    } finally {
-      isPostingComment = false;
-      elements.commentsSubmit.disabled = !user;
-      elements.commentsSubmit.dataset.state = "";
-      elements.commentsSubmit.textContent = "Post";
-    }
-  }
-
-  async function handleReport(commentId: string, control?: HTMLButtonElement) {
-    if (reportedComments.has(commentId)) {
-      return;
-    }
-    if (control) {
-      control.disabled = true;
-      control.dataset.state = "sending";
-      control.textContent = "Reporting…";
-    }
-    try {
-      await backendRequest(
-        `/api/games/${universeId}/comments/${commentId}/report`,
-        backendBase,
-        {
-          method: "POST",
-          body: user ? { userId: user.userId } : {},
-        },
-      );
-      reportedComments.add(commentId);
-      if (control) {
-        control.dataset.state = "reported";
-        control.textContent = "Reported";
-      }
-      setCommentsStatus("Thanks for the report!", "success");
-      window.setTimeout(() => {
-        // Only clear if message still visible and no other message set
-        if (elements.commentsStatus.textContent === "Thanks for the report!") {
-          setCommentsStatus(null);
-        }
-      }, 4000);
-      void requestComments(commentsPageNum, commentsPageSize, { showLoading: false });
-    } catch (error) {
-      console.warn(logPrefix, "Failed to report comment", error);
-      if (control) {
-        control.disabled = false;
-        control.dataset.state = "";
-        control.textContent = "Report";
-      }
-      setCommentsStatus(error instanceof Error ? error.message : "Unable to send report.", "error");
-    }
-  }
-
-  async function handleDelete(commentId: string, control?: HTMLButtonElement) {
-    if (!user) {
-      setCommentsStatus("Sign in to Roblox to manage your comments.", "error");
-      return;
-    }
-    if (control) {
-      control.disabled = true;
-      control.dataset.state = "sending";
-      control.textContent = "Deleting…";
-    }
-    try {
-      await backendRequest(
-        `/api/games/${universeId}/comments/${commentId}`,
-        backendBase,
-        {
-          method: "DELETE",
-          body: { userId: user.userId },
-        },
-      );
-      setCommentsStatus("Comment removed.", "success");
-      window.setTimeout(() => {
-        if (elements.commentsStatus.textContent === "Comment removed.") {
-          setCommentsStatus(null);
-        }
-      }, 3500);
-      await requestComments(commentsPageNum, commentsPageSize, { showLoading: false });
-    } catch (error) {
-      console.warn(logPrefix, "Failed to delete comment", error);
-      if (control) {
-        control.disabled = false;
-        control.dataset.state = "";
-        control.textContent = "Delete";
-      }
-      setCommentsStatus(error instanceof Error ? error.message : "Unable to delete comment.", "error");
-    }
-  }
-
   function updateScore() {
     elements.scoreValue.textContent = formatAverage(state.summary);
     const total = state.summary?.totalRatings ?? 0;
@@ -1356,11 +1475,128 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     elements.clearButton.disabled = state.status === "submitting";
   }
 
+  function renderComments() {
+    elements.commentsList.innerHTML = "";
+    const comments = state.comments ?? [];
+    if (comments.length === 0) {
+      const p = createElement("p");
+      p.textContent = "No comments yet. Be the first to comment!";
+      elements.commentsList.append(p);
+      return;
+    }
+    for (const c of comments.slice().reverse()) {
+      const displayName = c.username ?? `User ${c.userId}`;
+      const item = createElement("div", "rbdb-comment");
+
+      const avatar = createElement("div", "rbdb-comment-avatar");
+      if (c.avatarUrl) {
+        const img = document.createElement("img");
+        img.src = c.avatarUrl;
+        img.alt = `${displayName}'s avatar`;
+        img.loading = "lazy";
+        avatar.append(img);
+      } else {
+        const initial = displayName.trim().charAt(0).toUpperCase() || "?";
+        avatar.textContent = initial;
+        avatar.setAttribute("aria-hidden", "true");
+      }
+
+      const content = createElement("div", "rbdb-comment-content");
+      const head = createElement("div", "rbdb-comment-head");
+      const who = createElement("strong");
+      who.textContent = displayName;
+      
+      // Check if user is malicious
+      const maliciousEntry = state.maliciousUsers?.find(u => u.userID === c.userId);
+      if (maliciousEntry) {
+        who.style.color = "#d32f2f";
+        who.title = `Warning: ${maliciousEntry.summary}`;
+        const warningIcon = createElement("span");
+        warningIcon.textContent = " ⚠️";
+        warningIcon.title = maliciousEntry.summary;
+        who.append(warningIcon);
+      } else {
+        who.style.cursor = "pointer";
+        who.title = "View profile";
+      }
+
+      who.addEventListener("click", async () => {
+        const parsedId = Number.parseInt(c.userId, 10);
+        if (!Number.isFinite(parsedId) || parsedId <= 0) return;
+        try {
+          // show simple popover with user comments and ratings
+          void navigateToUserProfile(parsedId);
+        } catch (err) {
+          console.warn(logPrefix, "Failed to load user profile", err);
+        }
+      });
+      const when = createElement("span", "rbdb-comment-time");
+      when.textContent = new Date(c.createdAt).toLocaleString();
+      head.append(who, when);
+
+      const body = createElement("div", "rbdb-comment-body");
+      body.textContent = c.text;
+
+      const actions = createElement("div", "rbdb-comment-actions");
+      const reportBtn = createElement("button", "rbdb-comment-report") as HTMLButtonElement;
+      reportBtn.type = "button";
+      reportBtn.textContent = "Report";
+      reportBtn.addEventListener("click", async () => {
+        try {
+          reportBtn.disabled = true;
+          await reportComment(universeId, c.id, backendBase);
+          reportBtn.textContent = "Reported";
+          reportBtn.dataset.state = "reported";
+        } catch (err) {
+          console.warn(logPrefix, "Failed to report comment", err);
+          reportBtn.disabled = false;
+          delete reportBtn.dataset.state;
+        }
+      });
+      actions.append(reportBtn);
+
+      content.append(head, body, actions);
+      item.append(avatar, content);
+      elements.commentsList.append(item);
+    }
+  }
+
   function render() {
     updateScore();
     updateDistribution();
     updateStars();
     updateControls();
+    // render comments if we have data
+    renderComments();
+    renderCuratorReviews();
+
+    // Check malicious status for profile
+    if (isProfile && state.maliciousUsers) {
+      const userId = `${-1 * universeId}`;
+      const maliciousEntry = state.maliciousUsers.find((u) => u.userID === userId);
+      if (maliciousEntry) {
+        elements.maliciousWarning.hidden = false;
+        elements.maliciousWarning.innerHTML = "";
+        
+        const title = document.createElement("div");
+        title.style.fontWeight = "bold";
+        title.textContent = `⚠️ ${maliciousEntry.title || "Warning: Malicious User"}`;
+        
+        const body = document.createElement("div");
+        body.textContent = maliciousEntry.summary || maliciousEntry.body || "This user has been flagged by RBDb.";
+        
+        const meta = document.createElement("div");
+        meta.style.fontSize = "0.85em";
+        meta.style.marginTop = "4px";
+        meta.style.opacity = "0.8";
+        const dateStr = maliciousEntry.createdAt ? new Date(maliciousEntry.createdAt).toLocaleDateString() : "Unknown date";
+        meta.textContent = `Author: ${maliciousEntry.author || "RBDb"} • Created: ${dateStr}`;
+
+        elements.maliciousWarning.append(title, body, meta);
+      } else {
+        elements.maliciousWarning.hidden = true;
+      }
+    }
   }
 
   async function refresh() {
@@ -1368,14 +1604,33 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     setStatus("loading");
     try {
       state.summary = await requestSummary(universeId, user, backendBase);
+      // load comments
+      try {
+        state.comments = await requestComments(universeId, backendBase);
+        await hydrateCommentAvatars(state.comments);
+      } catch (err) {
+        console.warn(logPrefix, "Failed to load comments", err);
+        state.comments = [];
+      }
+      // load curator reviews and filter to this universe
+      try {
+        const curatorPayload = await requestCuratorReviews(backendBase);
+        const all = curatorPayload?.reviews ?? [];
+        state.curatorReviews = all.filter((r: any) => `${r.universeId}` === `${universeId}`);
+      } catch (err) {
+        console.warn(logPrefix, "Failed to load curator reviews", err);
+        state.curatorReviews = [];
+      }
+      // load malicious users
+      try {
+        const maliciousPayload = await requestMaliciousUsers(backendBase);
+        state.maliciousUsers = maliciousPayload?.users ?? [];
+      } catch (err) {
+        console.warn(logPrefix, "Failed to load malicious users", err);
+        state.maliciousUsers = [];
+      }
       setStatus("idle");
       render();
-      // Refresh comments alongside ratings
-      try {
-        void requestComments(commentsPageNum, commentsPageSize);
-      } catch {
-        // ignore
-      }
     } catch (error) {
       console.warn(logPrefix, "Failed to load ratings", error);
       setStatus("error");
@@ -1453,38 +1708,100 @@ function injectWidget(target: Element, universeId: number, backendBase: string) 
     void refresh();
   });
 
-  elements.commentsInput.addEventListener("input", () => {
-    updateComposerCounter();
+  // Comments form handling
+  elements.commentForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!user) {
+      setError("Sign in to Roblox to post comments.");
+      return;
+    }
+    const text = elements.commentInput.value.trim();
+    if (!text) return;
+    elements.commentSubmit.disabled = true;
+    try {
+      await submitComment(universeId, user, text, backendBase);
+      elements.commentInput.value = "";
+      // reload comments
+      try {
+        state.comments = await requestComments(universeId, backendBase);
+        await hydrateCommentAvatars(state.comments);
+      } catch (err) {
+        console.warn(logPrefix, "Failed to refresh comments after post", err);
+      }
+      renderComments();
+    } catch (err) {
+      console.warn(logPrefix, "Failed to post comment", err);
+      setError(err instanceof Error ? err.message : "Unable to post comment.");
+    } finally {
+      elements.commentSubmit.disabled = false;
+    }
   });
 
-  elements.commentsComposer.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void handleSubmitComment();
-  });
-
-  // Comments pager event handlers
-  elements.commentsPrev.addEventListener("click", () => {
-    if (commentsPageNum <= 1) return;
-    commentsPageNum -= 1;
-    void requestComments(commentsPageNum, commentsPageSize);
-  });
-  elements.commentsNext.addEventListener("click", () => {
-    commentsPageNum += 1;
-    void requestComments(commentsPageNum, commentsPageSize);
-  });
-  elements.commentsPager.addEventListener("change", () => {
-    const val = Number.parseInt(elements.commentsPager.value, 10) || 1;
-    commentsPageNum = val;
-    void requestComments(commentsPageNum, commentsPageSize);
-  });
+  async function requestMaliciousUsers(backendBase: string): Promise<{ lastFetched: string | null; users: MaliciousUserEntry[] }> {
+    return backendRequest<{ lastFetched: string | null; users: MaliciousUserEntry[] }>(`/api/malicious-users`, backendBase, {
+      method: "GET",
+    });
+  }
 
   void refresh();
+}
+
+async function requestMaliciousUsersGlobal(backendBase: string): Promise<{ lastFetched: string | null; users: MaliciousUserEntry[] }> {
+  return backendRequest<{ lastFetched: string | null; users: MaliciousUserEntry[] }>(`/api/malicious-users`, backendBase, {
+    method: "GET",
+  });
+}
+
+async function handleProfilePage(backendBase: string) {
+  const match = window.location.pathname.match(/\/users\/(\d+)\/profile/);
+  if (!match) return;
+  const userId = match[1];
+  // Use a negative number to represent user profiles in the backend to distinguish from games
+  // This is a simple hack; ideally backend would support separate entity types.
+  // Assuming universe IDs are positive integers.
+  const profileUniverseId = -1 * Number.parseInt(userId, 10);
+  
+  console.log(logPrefix, "Detected profile page for user:", userId, "Mapped to universeId:", profileUniverseId);
+
+  // Inject malicious user warning
+  try {
+    const maliciousPayload = await requestMaliciousUsersGlobal(backendBase);
+    console.log(logPrefix, "Fetched malicious users:", maliciousPayload.users.length);
+    const maliciousEntry = maliciousPayload.users.find((u) => u.userID === userId);
+
+    if (maliciousEntry) {
+      console.log(logPrefix, "User is malicious:", maliciousEntry);
+      // Warning is now handled by the widget itself
+    }
+  } catch (err) {
+    console.warn(logPrefix, "Failed to check malicious user status", err);
+  }
+
+  // Inject rating widget
+  // Try multiple selectors for the profile header or main container
+  const targetSelector = ".profile-header, .header-caption, .profile-display-name, .container-main, #container-main";
+  const target = await waitForElement<HTMLElement>(targetSelector, 10_000);
+  
+  if (target) {
+    console.log(logPrefix, "Injecting widget into profile page, target:", target);
+    injectWidget(target, profileUniverseId, backendBase);
+  } else {
+    console.warn(logPrefix, "Could not find suitable target to inject widget on profile page. Falling back to body.");
+    injectWidget(document.body, profileUniverseId, backendBase);
+  }
 }
 
 async function bootstrap() {
   console.log(logPrefix, "Bootstrap started");
   const backendBase = resolveBackendBase();
   console.log(logPrefix, "Backend base:", backendBase);
+
+  if (window.location.pathname.match(/\/users\/\d+\/profile/)) {
+    await handleProfilePage(backendBase);
+    return;
+  }
+
+
   const universeId = getUniverseId();
   console.log(logPrefix, "Universe ID:", universeId);
   if (!universeId) {
